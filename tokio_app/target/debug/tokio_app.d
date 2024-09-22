@@ -1,0 +1,1 @@
+D:\Проектирование\PC_SOFT\Simple_tokio_app\tokio_app\target\debug\tokio_app.exe: D:\Проектирование\PC_SOFT\Simple_tokio_app\tokio_app\src\main.rs D:\Проектирование\PC_SOFT\Simple_tokio_app\tokio_app\src\serial.rs

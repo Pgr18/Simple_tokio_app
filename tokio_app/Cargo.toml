@@ -1,0 +1,13 @@
+[package]
+name = "tokio_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+mini-redis = "0.4"
+serial2-tokio = "0.1.13"
+
+[dependencies.async-std]
+version = "1.6"
+features = ["attributes"]

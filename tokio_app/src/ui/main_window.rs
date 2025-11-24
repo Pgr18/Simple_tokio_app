@@ -79,7 +79,24 @@ impl MainWindow {
             }
         }
     }
+
+    
+    fn select_save_file(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("Save CSV File")
+            .set_file_name("recorded_data.csv")
+            .add_filter("CSV files", &["csv"])
+            .add_filter("All files", &["*"])
+            .set_directory(std::env::current_dir().unwrap_or_default())
+            .save_file()
+        {
+            self.save_path = path;
+        }
+    }
 }
+
+
+
 
 impl eframe::App for MainWindow {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -181,7 +198,7 @@ impl eframe::App for MainWindow {
                             self.save_path = PathBuf::from(path_str);
                         }
                         if ui.button("📁").clicked() {
-                            // Здесь можно добавить диалог выбора файла
+                            self.select_save_file();
                         }
                     });
                 });

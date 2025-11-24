@@ -32,46 +32,38 @@ impl DataProcessor {
     }
 
     pub fn add_packet(&mut self, packet: DataPacket) {
-        let DataPacket {
-            timestamp,
-            channel_a,
-            channel_b,
-            channel_c,
-            status,
-        } = packet;
-
-        // Обрабатываем каждый канал отдельно
-        self.process_channel_a(timestamp, channel_a);
-        self.process_channel_b(timestamp, channel_b);
-        self.process_channel_c(timestamp, channel_c);
+        // Обрабатываем каждый канал отдельными вызовами
+        self.add_to_channel_a(packet.timestamp, packet.channel_a);
+        self.add_to_channel_b(packet.timestamp, packet.channel_b);
+        self.add_to_channel_c(packet.timestamp, packet.channel_c);
 
         // Если запись активна, сохраняем полные данные
         if self.recording {
             self.recorded_data.push(RecordedPacket {
-                timestamp,
-                channel_a,
-                channel_b,
-                channel_c,
-                status,
+                timestamp: packet.timestamp,
+                channel_a: packet.channel_a,
+                channel_b: packet.channel_b,
+                channel_c: packet.channel_c,
+                status: packet.status,
             });
         }
     }
 
-    fn process_channel_a(&mut self, timestamp: u64, value: f64) {
+    fn add_to_channel_a(&mut self, timestamp: u64, value: f64) {
         self.channel_a.push((timestamp, value));
         if self.channel_a.len() > self.max_points {
             self.channel_a.remove(0);
         }
     }
 
-    fn process_channel_b(&mut self, timestamp: u64, value: f64) {
+    fn add_to_channel_b(&mut self, timestamp: u64, value: f64) {
         self.channel_b.push((timestamp, value));
         if self.channel_b.len() > self.max_points {
             self.channel_b.remove(0);
         }
     }
 
-    fn process_channel_c(&mut self, timestamp: u64, value: f64) {
+    fn add_to_channel_c(&mut self, timestamp: u64, value: f64) {
         self.channel_c.push((timestamp, value));
         if self.channel_c.len() > self.max_points {
             self.channel_c.remove(0);
@@ -101,7 +93,7 @@ impl DataProcessor {
         }
 
         let mut wtr = csv::Writer::from_path(path)?;
-
+        
         // Записываем заголовок
         wtr.write_record(&["timestamp", "channel_a", "channel_b", "channel_c", "status"])?;
 

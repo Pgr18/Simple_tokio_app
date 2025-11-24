@@ -13,3 +13,4 @@ tokio = { version = "1.0", features = ["full"] }
 anyhow = "1.0"
 csv = "1.4.0"
 serde = {version = "1.0.228", features = ["derive"]}
+rfd = "0.15.4"

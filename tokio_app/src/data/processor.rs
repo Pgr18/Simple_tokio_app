@@ -15,8 +15,10 @@ pub struct DataProcessor {
     channel_a: Vec<(u64, f64)>,
     channel_b: Vec<(u64, f64)>,
     channel_c: Vec<(u64, f64)>,
-    recording: bool,
     recorded_data: Vec<RecordedPacket>,
+    session_start_time: Option<u64>,
+    auto_recording: bool,
+    recording_start_datetime: Option<String>, // Время начала текущей сессии записи в формате строки
 }
 
 impl DataProcessor {
@@ -26,19 +28,26 @@ impl DataProcessor {
             channel_a: Vec::with_capacity(max_points),
             channel_b: Vec::with_capacity(max_points),
             channel_c: Vec::with_capacity(max_points),
-            recording: false,
             recorded_data: Vec::new(),
+            session_start_time: None,
+            auto_recording: true,
+            recording_start_datetime: None,
         }
     }
 
     pub fn add_packet(&mut self, packet: DataPacket) {
-        // Обрабатываем каждый канал отдельными вызовами
+        // Если это первый пакет в сессии, запоминаем время начала
+        if self.session_start_time.is_none() {
+            self.session_start_time = Some(packet.timestamp);
+        }
+
+        // Добавляем в каналы отображения
         self.add_to_channel_a(packet.timestamp, packet.channel_a);
         self.add_to_channel_b(packet.timestamp, packet.channel_b);
         self.add_to_channel_c(packet.timestamp, packet.channel_c);
 
-        // Если запись активна, сохраняем полные данные
-        if self.recording {
+        // Записываем данные только если автозапись включена
+        if self.auto_recording {
             self.recorded_data.push(RecordedPacket {
                 timestamp: packet.timestamp,
                 channel_a: packet.channel_a,
@@ -70,17 +79,41 @@ impl DataProcessor {
         }
     }
 
-    pub fn start_recording(&mut self) {
-        self.recording = true;
+    /// Включить автозапись
+    pub fn start_auto_recording(&mut self) {
+        if !self.auto_recording {
+            self.auto_recording = true;
+            // При включении записи обновляем время начала сессии
+            let now = chrono::Local::now();
+            self.recording_start_datetime = Some(now.format("%Y-%m-%d %H-%M-%S").to_string());
+        }
+    }
+
+    /// Выключить автозапись
+    pub fn stop_auto_recording(&mut self) {
+        self.auto_recording = false;
+    }
+
+    /// Получить статус автозаписи
+    pub fn is_auto_recording(&self) -> bool {
+        self.auto_recording
+    }
+
+    /// Получить время начала записи в формате строки
+    pub fn get_recording_start_datetime(&self) -> Option<&str> {
+        self.recording_start_datetime.as_deref()
+    }
+
+    /// Сброс записи и начало новой сессии
+    pub fn reset_recording(&mut self) {
         self.recorded_data.clear();
+        self.session_start_time = None;
+        self.recording_start_datetime = None;
     }
 
-    pub fn stop_recording(&mut self) {
-        self.recording = false;
-    }
-
-    pub fn is_recording(&self) -> bool {
-        self.recording
+    /// Получить время начала текущей сессии записи
+    pub fn get_session_start_time(&self) -> Option<u64> {
+        self.session_start_time
     }
 
     pub fn get_recorded_count(&self) -> usize {
@@ -112,10 +145,6 @@ impl DataProcessor {
         Ok(())
     }
 
-    pub fn clear_recorded_data(&mut self) {
-        self.recorded_data.clear();
-    }
-
     pub fn get_channel_a(&self) -> &[(u64, f64)] {
         &self.channel_a
     }
@@ -133,6 +162,8 @@ impl DataProcessor {
         self.channel_b.clear();
         self.channel_c.clear();
         self.recorded_data.clear();
-        self.recording = false;
+        self.session_start_time = None;
+        self.auto_recording = true;
+        self.recording_start_datetime = None;
     }
 }

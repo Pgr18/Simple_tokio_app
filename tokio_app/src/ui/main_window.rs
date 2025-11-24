@@ -3,6 +3,8 @@ use crate::com_port::{ComPortReader, SimpleProtocolParser};
 use crate::data::processor::DataProcessor;
 use super::plots::PlotManager;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+use dirs::download_dir;
 
 pub struct MainWindow {
     com_reader: ComPortReader,
@@ -12,7 +14,7 @@ pub struct MainWindow {
     baud_rate: u32,
     is_connected: bool,
     available_ports: Vec<String>,
-    save_path: PathBuf,
+    save_directory: PathBuf,
 }
 
 impl Default for MainWindow {
@@ -27,9 +29,8 @@ impl MainWindow {
         let com_reader = ComPortReader::new(parser);
         let available_ports = ComPortReader::available_ports();
         
-        // Устанавливаем путь для сохранения по умолчанию
-        let mut save_path = std::env::current_dir().unwrap_or_default();
-        save_path.push("recorded_data.csv");
+        // Устанавливаем директорию для сохранения по умолчанию: Downloads/gui-app
+        let save_directory = Self::get_default_save_directory();
         
         Self {
             com_reader,
@@ -39,7 +40,34 @@ impl MainWindow {
             baud_rate: 9600,
             is_connected: false,
             available_ports,
-            save_path,
+            save_directory,
+        }
+    }
+
+    /// Получаем директорию для сохранения по умолчанию (Downloads/gui-app)
+    fn get_default_save_directory() -> PathBuf {
+        if let Some(mut downloads_dir) = download_dir() {
+            downloads_dir.push("gui-app");
+            // Создаем директорию, если её нет
+            let _ = std::fs::create_dir_all(&downloads_dir);
+            downloads_dir
+        } else {
+            // Fallback: текущая директория
+            std::env::current_dir().unwrap_or_default()
+        }
+    }
+
+    /// Генерирует полный путь к файлу для сохранения
+    fn generate_save_path(&self) -> PathBuf {
+        // Используем время начала записи, если оно есть
+        if let Some(datetime_str) = self.data_processor.get_recording_start_datetime() {
+            let filename = format!("{}.csv", datetime_str);
+            self.save_directory.join(filename)
+        } else {
+            // Fallback: текущее время
+            let now = chrono::Local::now();
+            let filename = now.format("%Y-%m-%d %H-%M-%S.csv").to_string();
+            self.save_directory.join(filename)
         }
     }
 
@@ -60,46 +88,67 @@ impl MainWindow {
         }
     }
 
-    fn start_stop_recording(&mut self) {
-        if self.data_processor.is_recording() {
-            self.data_processor.stop_recording();
-        } else {
-            self.data_processor.start_recording();
-        }
-    }
-
     fn save_recorded_data(&mut self) {
-        match self.data_processor.save_to_csv(&self.save_path) {
+        if self.data_processor.get_recorded_count() == 0 {
+            return;
+        }
+
+        let save_path = self.generate_save_path();
+        
+        match self.data_processor.save_to_csv(&save_path) {
             Ok(()) => {
-                println!("Data successfully saved to: {}", self.save_path.display());
-                // Здесь можно добавить уведомление в UI
+                println!("Data successfully saved to: {}", save_path.display());
+                self.data_processor.reset_recording();
             }
             Err(e) => {
                 eprintln!("Failed to save data: {}", e);
             }
         }
+        
     }
 
-    
-    fn select_save_file(&mut self) {
+    fn select_save_directory(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .set_title("Save CSV File")
-            .set_file_name("recorded_data.csv")
-            .add_filter("CSV files", &["csv"])
-            .add_filter("All files", &["*"])
-            .set_directory(std::env::current_dir().unwrap_or_default())
-            .save_file()
+            .set_title("Select Save Directory")
+            .set_directory(&self.save_directory)
+            .pick_folder()
         {
-            self.save_path = path;
+            self.save_directory = path;
+        }
+    }
+
+    /// Обработка горячих клавиш
+    fn handle_hotkeys(&mut self, ctx: &egui::Context) {
+        // В egui Key::S, Key::N, Key::R - это физические клавиши,
+        // поэтому они работают независимо от раскладки
+        
+        // S - сохранение текущей записи
+        if ctx.input(|i| i.key_pressed(egui::Key::S)) && 
+           self.data_processor.get_recorded_count() > 0 {
+            self.save_recorded_data();
+        }
+        
+        // N - новая запись (сброс текущей)
+        if ctx.input(|i| i.key_pressed(egui::Key::N)) {
+            self.data_processor.reset_recording();
+        }
+
+        // R - переключение автозаписи
+        if ctx.input(|i| i.key_pressed(egui::Key::R)) {
+            if self.data_processor.is_auto_recording() {
+                self.data_processor.stop_auto_recording();
+            } else {
+                self.data_processor.start_auto_recording();
+            }
         }
     }
 }
 
-
-
-
 impl eframe::App for MainWindow {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Обрабатываем горячие клавиши
+        self.handle_hotkeys(ctx);
+
         // Чтение данных из COM-порта
         if let Some(packet) = self.com_reader.read_data() {
             self.data_processor.add_packet(packet);
@@ -150,62 +199,98 @@ impl eframe::App for MainWindow {
                 // Секция записи данных
                 ui.vertical(|ui| {
                     ui.heading("Data Recording");
+                    
+                    // Статус и управление автозаписью
                     ui.horizontal(|ui| {
-                        // Кнопка старт/стоп записи
-                        let record_button_text = if self.data_processor.is_recording() { 
-                            "⏹️ Stop Recording" 
-                        } else { 
-                            "⏺️ Start Recording" 
-                        };
+                        // Статус автозаписи
+                        if self.data_processor.is_auto_recording() {
+                            ui.colored_label(egui::Color32::GREEN, "● Auto Recording");
+                        } else {
+                            ui.colored_label(egui::Color32::YELLOW, "● Recording Paused");
+                        }
                         
-                        // Создаем визуальное выделение для кнопки записи
-                        let record_button = if self.data_processor.is_recording() {
-                            ui.button(record_button_text)
+                        ui.label(format!("Points: {}", self.data_processor.get_recorded_count()));
+
+                        // Кнопки управления автозаписью
+                        if self.data_processor.is_auto_recording() {
+                            if ui.button("⏸️ Pause (R)").clicked() {
+                                self.data_processor.stop_auto_recording();
+                            }
                         } else {
-                            ui.button(record_button_text)
-                        };
-
-                        if record_button.clicked() {
-                            self.start_stop_recording();
-                        }
-
-                        // Статус записи
-                        if self.data_processor.is_recording() {
-                            ui.colored_label(egui::Color32::RED, "● Recording");
-                            ui.label(format!("Points: {}", self.data_processor.get_recorded_count()));
-                        } else {
-                            ui.colored_label(egui::Color32::GRAY, "● Stopped");
-                        }
-
-                        // Кнопка сохранения (только когда не записываем)
-                        let save_enabled = !self.data_processor.is_recording() && self.data_processor.get_recorded_count() > 0;
-                        if ui.add_enabled(save_enabled, egui::Button::new("💾 Save to CSV")).clicked() {
-                            self.save_recorded_data();
-                        }
-
-                        // Кнопка очистки (только когда не записываем)
-                        let clear_enabled = !self.data_processor.is_recording() && self.data_processor.get_recorded_count() > 0;
-                        if ui.add_enabled(clear_enabled, egui::Button::new("🗑️ Clear")).clicked() {
-                            self.data_processor.clear_recorded_data();
+                            if ui.button("▶️ Resume (R)").clicked() {
+                                self.data_processor.start_auto_recording();
+                            }
                         }
                     });
 
-                    // Поле пути для сохранения
+                    // Дополнительная информация
                     ui.horizontal(|ui| {
-                        ui.label("Save path:");
-                        let mut path_str = self.save_path.to_string_lossy().to_string();
-                        if ui.text_edit_singleline(&mut path_str).changed() {
-                            self.save_path = PathBuf::from(path_str);
+                        // Время начала сессии записи
+                        if let Some(datetime_str) = self.data_processor.get_recording_start_datetime() {
+                            ui.label(format!("Session: {}", datetime_str));
+                        } else if self.data_processor.is_auto_recording() {
+                            ui.label("Session: Starting...");
+                        } else {
+                            ui.label("Session: Paused");
+                        }
+
+                        // Кнопка новой записи
+                        if ui.button("🆕 New Session (N)").clicked() {
+                            self.data_processor.reset_recording();
+                        }
+
+                        // Кнопка сохранения
+                        let save_enabled = self.data_processor.get_recorded_count() > 0;
+                        if ui.add_enabled(save_enabled, egui::Button::new("💾 Save (S)")).clicked() {
+                            self.save_recorded_data();
+                            
+                        }
+                    });
+
+                    // Директория для сохранения
+                    ui.horizontal(|ui| {
+                        ui.label("Save directory:");
+                        let mut dir_str = self.save_directory.to_string_lossy().to_string();
+                        if ui.text_edit_singleline(&mut dir_str).changed() {
+                            self.save_directory = PathBuf::from(dir_str);
                         }
                         if ui.button("📁").clicked() {
-                            self.select_save_file();
+                            self.select_save_directory();
                         }
+                    });
+
+                    // Следующее имя файла
+                    ui.horizontal(|ui| {
+                        ui.label("Next filename:");
+                        let next_filename = if let Some(datetime_str) = self.data_processor.get_recording_start_datetime() {
+                            format!("{}.csv", datetime_str)
+                        } else {
+                            "No active session".to_string()
+                        };
+                        ui.label(next_filename);
                     });
                 });
             });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Подсказка по горячим клавишам
+            ui.vertical_centered(|ui| {
+                if self.data_processor.get_recorded_count() > 0 {
+                    let recording_status = if self.data_processor.is_auto_recording() {
+                        "● Auto Recording"
+                    } else {
+                        "● Recording Paused"
+                    };
+                    ui.colored_label(
+                        if self.data_processor.is_auto_recording() { egui::Color32::GREEN } else { egui::Color32::YELLOW },
+                        recording_status
+                    );
+                    ui.label("💡 Hotkeys: 'S' - Save, 'N' - New session, 'R' - Toggle recording");
+                    ui.label("🎯 Hotkeys work in any keyboard layout!");
+                }
+            });
+            
             self.plot_manager.show_plots(ui, &self.data_processor);
         });
 

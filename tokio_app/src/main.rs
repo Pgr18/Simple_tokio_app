@@ -1,22 +1,25 @@
-//use mini_redis::{client,Result};
-pub mod serial;
+mod com_port;
+mod data;
+mod ui;
 
-use std::any::type_name;
+use eframe::egui;
+use ui::MainWindow;
 
+fn main() -> eframe::Result<()> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1200.0, 800.0])
+            .with_title("COM Port Data Plotter"),
+        ..Default::default()
+    };
 
-fn type_of<T>(_: T) -> &'static str {
-    type_name::<T>()
-}
-
-
-fn main()  {
-    let _= serial::scan();
-    let _ok_port= serial::connect("COM3");
-    if type_of(_ok_port) == "SerialPort" {
-        println!("OK");
-    } else {
-        println!("Error");
-    }
-
-    
+    eframe::run_native(
+        "COM Port Data Plotter",
+        options,
+        Box::new(|cc| {
+            // Убираем строку с egui_extras, если она не нужна
+            // или используем альтернативный подход
+            Box::new(MainWindow::new())
+        }),
+    )
 }

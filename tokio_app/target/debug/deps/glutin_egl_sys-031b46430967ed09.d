@@ -1,0 +1,8 @@
+D:\Simple_tokio_app\tokio_app\target\debug\deps\glutin_egl_sys-031b46430967ed09.d: C:\Users\paulr\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin_egl_sys-0.6.0\src\lib.rs D:\Simple_tokio_app\tokio_app\target\debug\build\glutin_egl_sys-7e235d778e21b9e8\out/egl_bindings.rs
+
+D:\Simple_tokio_app\tokio_app\target\debug\deps\libglutin_egl_sys-031b46430967ed09.rmeta: C:\Users\paulr\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin_egl_sys-0.6.0\src\lib.rs D:\Simple_tokio_app\tokio_app\target\debug\build\glutin_egl_sys-7e235d778e21b9e8\out/egl_bindings.rs
+
+C:\Users\paulr\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\glutin_egl_sys-0.6.0\src\lib.rs:
+D:\Simple_tokio_app\tokio_app\target\debug\build\glutin_egl_sys-7e235d778e21b9e8\out/egl_bindings.rs:
+
+# env-dep:OUT_DIR=D:\\Simple_tokio_app\\tokio_app\\target\\debug\\build\\glutin_egl_sys-7e235d778e21b9e8\\out

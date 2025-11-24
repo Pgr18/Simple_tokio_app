@@ -1,4 +1,6 @@
-#[derive(Debug, Clone)]
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct DataPacket {
     pub timestamp: u64,
     pub channel_a: f64,

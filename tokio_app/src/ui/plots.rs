@@ -30,13 +30,13 @@ impl TimeScale {
         match self {
             TimeScale::Scale10s => TimeScale::Scale30s,
             TimeScale::Scale30s => TimeScale::Scale60s,
-            TimeScale::Scale60s => TimeScale::Scale10s,
+            TimeScale::Scale60s => TimeScale::Scale10s, // Циклически возвращаемся к 10s
         }
     }
 
     pub fn prev_scale(&self) -> TimeScale {
         match self {
-            TimeScale::Scale10s => TimeScale::Scale60s,
+            TimeScale::Scale10s => TimeScale::Scale60s, // Циклически переходим к 60s
             TimeScale::Scale30s => TimeScale::Scale10s,
             TimeScale::Scale60s => TimeScale::Scale30s,
         }

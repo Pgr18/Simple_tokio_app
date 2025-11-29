@@ -4,6 +4,7 @@ pub struct DataPacket {
     pub channel_a: f64,
     pub channel_b: f64,
     pub channel_c: f64,
+    pub channel_d: f64,
     pub status: u8,
 }
 
@@ -33,12 +34,14 @@ impl ProtocolParser for SimpleProtocolParser {
         let channel_a = f32::from_be_bytes([raw_data[9], raw_data[10], raw_data[11], raw_data[12]]) as f64;
         let channel_b = f32::from_be_bytes([raw_data[13], raw_data[14], raw_data[15], raw_data[16]]) as f64;
         let channel_c = f32::from_be_bytes([raw_data[17], raw_data[18], raw_data[19], raw_data[20]]) as f64;
+        let channel_d = f32::from_be_bytes([raw_data[17], raw_data[18], raw_data[19], raw_data[20]]) as f64;
 
         Ok(DataPacket {
             timestamp,
             channel_a,
             channel_b,
             channel_c,
+            channel_d,
             status: raw_data[21],
         })
     }
@@ -56,6 +59,7 @@ impl ProtocolParser for SimpleProtocolParser {
             channel_a: (timestamp as f64 * 0.01).sin(),
             channel_b: (timestamp as f64 * 0.02).cos(),
             channel_c: (timestamp as f64 * 0.005).sin() * 2.0,
+            channel_d: (timestamp as f64 * 0.005).sin() * 4.0,
             status: 0x01,
         }
     }

@@ -100,6 +100,13 @@ impl PlotManager {
 
                 ui.separator();
 
+
+                // Канал D
+                ui.heading("Channel D");
+                Self::show_channel_plot(ui, data_processor.get_channel_d(), "Channel D", self.current_view_end, self.time_scale);
+
+                ui.separator();
+
                 // Все каналы вместе
                 ui.heading("All Channels");
                 Self::show_combined_plot(ui, data_processor, self.current_view_end, self.time_scale);
@@ -203,6 +210,22 @@ impl PlotManager {
                     .collect();
                 let line_c = Line::new(points_c).name("Channel C");
                 plot_ui.line(line_c);
+            }
+
+            // Канал D - фильтруем данные перед созданием PlotPoints
+            let channel_d_filtered: Vec<(f64, f64)> = data_processor.get_channel_d()
+                .iter()
+                .filter(|(time, _)| *time >= view_start && *time <= view_end)
+                .cloned()
+                .collect();
+            
+            if !channel_d_filtered.is_empty() {
+                let points_d: PlotPoints = channel_d_filtered
+                    .iter()
+                    .map(|(time_seconds, value)| [*time_seconds, *value])
+                    .collect();
+                let line_d = Line::new(points_d).name("Channel D");
+                plot_ui.line(line_d);
             }
         });
     }

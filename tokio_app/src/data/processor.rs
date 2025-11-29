@@ -9,6 +9,7 @@ pub struct RecordedPacket {
     pub channel_a: f64,
     pub channel_b: f64,
     pub channel_c: f64,
+    pub channel_d: f64,
     pub status: u8,
 }
 
@@ -17,6 +18,7 @@ pub struct DataProcessor {
     channel_a: Vec<(f64, f64)>, // (time_seconds, value)
     channel_b: Vec<(f64, f64)>, // (time_seconds, value)
     channel_c: Vec<(f64, f64)>, // (time_seconds, value)
+    channel_d: Vec<(f64, f64)>, // (time_seconds, value)
     recorded_data: Vec<RecordedPacket>,
     session_start_time: Option<u64>,
     auto_recording: bool,
@@ -34,6 +36,7 @@ impl DataProcessor {
             channel_a: Vec::with_capacity(max_points),
             channel_b: Vec::with_capacity(max_points),
             channel_c: Vec::with_capacity(max_points),
+            channel_d: Vec::with_capacity(max_points),
             recorded_data: Vec::new(),
             session_start_time: None,
             auto_recording: true,
@@ -59,6 +62,7 @@ impl DataProcessor {
         self.add_to_channel_a(time_seconds, packet.channel_a);
         self.add_to_channel_b(time_seconds, packet.channel_b);
         self.add_to_channel_c(time_seconds, packet.channel_c);
+        self.add_to_channel_d(time_seconds, packet.channel_d);
 
         // Записываем данные только если автозапись включена
         if self.auto_recording {
@@ -68,6 +72,7 @@ impl DataProcessor {
                 channel_a: packet.channel_a,
                 channel_b: packet.channel_b,
                 channel_c: packet.channel_c,
+                channel_d: packet.channel_d,
                 status: packet.status,
             });
         }
@@ -95,11 +100,19 @@ impl DataProcessor {
         }
     }
 
+    fn add_to_channel_d(&mut self, time_seconds: f64, value: f64) {
+        self.channel_d.push((time_seconds, value));
+        if self.channel_d.len() > self.max_points {
+            self.channel_d.remove(0);
+        }
+    }
+
     /// Получить максимальное время в данных
     pub fn get_max_time(&self) -> f64 {
         let max_a = self.channel_a.last().map(|(t, _)| *t).unwrap_or(0.0);
         let max_b = self.channel_b.last().map(|(t, _)| *t).unwrap_or(0.0);
         let max_c = self.channel_c.last().map(|(t, _)| *t).unwrap_or(0.0);
+        let max_d = self.channel_d.last().map(|(t, _)| *t).unwrap_or(0.0);
         max_a.max(max_b).max(max_c)
     }
 
@@ -151,6 +164,7 @@ impl DataProcessor {
         self.channel_a.clear();
         self.channel_b.clear();
         self.channel_c.clear();
+        self.channel_d.clear();
         self.recorded_data.clear();
         self.session_start_time = None;
         // Обновляем время начала на текущее при сбросе
@@ -176,7 +190,7 @@ impl DataProcessor {
         let mut wtr = csv::Writer::from_path(path)?;
         
         // Записываем заголовок с временем в секундах
-        wtr.write_record(&["time_seconds", "channel_a", "channel_b", "channel_c", "status"])?;
+        wtr.write_record(&["time_seconds", "channel_a", "channel_b", "channel_c","channel_d", "status"])?;
 
         // Записываем данные
         for packet in &self.recorded_data {
@@ -185,6 +199,7 @@ impl DataProcessor {
                 packet.channel_a.to_string(),
                 packet.channel_b.to_string(),
                 packet.channel_c.to_string(),
+                packet.channel_d.to_string(),
                 packet.status.to_string(),
             ])?;
         }
@@ -205,10 +220,15 @@ impl DataProcessor {
         &self.channel_c
     }
 
+    pub fn get_channel_d(&self) -> &[(f64, f64)] {
+        &self.channel_d
+    }
+
     pub fn clear(&mut self) {
         self.channel_a.clear();
         self.channel_b.clear();
         self.channel_c.clear();
+        self.channel_d.clear();
         self.recorded_data.clear();
         self.session_start_time = None;
         self.auto_recording = true;

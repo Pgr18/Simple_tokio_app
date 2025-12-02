@@ -187,37 +187,6 @@ impl MainWindow {
 
     /// Обработка горячих клавиш (работает в любой раскладке)
     fn handle_hotkeys(&mut self, ctx: &egui::Context) {
-        // // Способ 1: По физическим клавишам (scan code)
-        // // S - сохранение текущей записи (физическая клавиша S, scan code 31)
-        // if Self::is_key_pressed_by_scan_code(ctx, 31) && 
-        //    self.data_processor.get_recorded_count() > 0 {
-        //     self.save_recorded_data();
-        // }
-        
-    //     // N - новая запись (физическая клавиша N, scan code 49)
-    //     if Self::is_key_pressed_by_scan_code(ctx, 49) {
-    //         self.data_processor.reset_recording();
-    //     }
-
-    //     // R - переключение автозаписи (физическая клавиша R, scan code 19)
-    //     if Self::is_key_pressed_by_scan_code(ctx, 19) {
-    //         if self.data_processor.is_auto_recording() {
-    //             self.data_processor.stop_auto_recording();
-    //         } else {
-    //             self.data_processor.start_auto_recording();
-    //         }
-    //     }
-
-    //     // + - увеличение масштаба (zoom in)
-    //     if Self::is_key_pressed_by_scan_code(ctx, 46) {
-    //         self.plot_manager.zoom_in();
-    //     }
-
-    //     // - - уменьшение масштаба (zoom out)
-    //     if Self::is_key_pressed_by_scan_code(ctx, 45) {
-    //         self.plot_manager.zoom_out();
-    //     }
-
         // Способ 2: Альтернативный - по символам (для разных раскладок)
         // S/Ы - сохранение
         if Self::is_key_pressed_by_char(ctx, &['s', 'S', 'ы', 'Ы']) && 

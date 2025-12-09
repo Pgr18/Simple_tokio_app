@@ -1,5 +1,5 @@
 use eframe::egui;
-use crate::com_port::{ComPortReader, SimpleProtocolParser};
+use crate::com_port::{ComPortReader, MedicalProtocolParser};
 use crate::data::processor::DataProcessor;
 use super::plots::{PlotManager, TimeScale};
 use std::path::PathBuf;
@@ -25,7 +25,7 @@ impl Default for MainWindow {
 
 impl MainWindow {
     pub fn new() -> Self {
-        let parser = Box::new(SimpleProtocolParser);
+        let parser = Box::new(MedicalProtocolParser);
         let com_reader = ComPortReader::new(parser);
         let available_ports = ComPortReader::available_ports();
         

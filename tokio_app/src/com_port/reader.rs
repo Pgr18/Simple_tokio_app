@@ -28,7 +28,10 @@ impl ComPortReader {
 
     pub fn connect(&mut self, port_name: &str, baud_rate: u32) -> Result<(), Box<dyn std::error::Error>> {
         let port = serialport::new(port_name, baud_rate)
-            .timeout(Duration::from_millis(100))
+            .data_bits(serialport::DataBits::Eight)
+            .parity(serialport::Parity::None)
+            .flow_control(serialport::FlowControl::Software)
+            .timeout(Duration::from_millis(300))
             .open()?;
 
         self.port = Some(port);
@@ -48,7 +51,7 @@ impl ComPortReader {
             let mut buffer: Vec<u8> = vec![0; 1024];
             
             match port.read(buffer.as_mut_slice()) {
-                Ok(bytes_read) if bytes_read > 0 => {
+                Ok(bytes_read) if bytes_read > 19 => {
                     let data = &buffer[..bytes_read];
                     match self.parser.parse_data(data) {
                         Ok(packet) => Some(packet),

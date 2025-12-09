@@ -2,4 +2,4 @@ pub mod protocol;
 pub mod reader;
 
 pub use reader::ComPortReader;
-pub use protocol::{DataPacket, ProtocolParser, SimpleProtocolParser};
+pub use protocol::{DataPacket, ProtocolParser, MedicalProtocolParser};

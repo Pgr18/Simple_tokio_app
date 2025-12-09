@@ -4,26 +4,33 @@ use chrono::{Local, DateTime};
 
 #[derive(Debug, Clone)]
 pub struct RecordedPacket {
-    pub timestamp: u64,    // Оригинальный timestamp (могут понадобиться для отладки)
-    pub time_seconds: f64, // Время в секундах относительно начала записи
-    pub channel_a: f64,
-    pub channel_b: f64,
-    pub channel_c: f64,
-    pub channel_d: f64,
-    pub status: u8,
+    pub timestamp: u64,           // Оригинальный timestamp
+    pub time_seconds: f64,        // Время в секундах относительно начала записи
+    pub rheocardiogram: f64,      // Риккардиограмма
+    pub base_impedance: f64,      // Базовая импеданс
+    pub ecg: f64,                 // ECG
+    pub channel4: f64,            // Зарезервированный канал 4
+    pub channel5: f64,            // Зарезервированный канал 5
+    pub channel6: f64,            // Зарезервированный канал 6
+    pub channel7: f64,            // Зарезервированный канал 7
+    pub channel8: f64,            // Зарезервированный канал 8
 }
 
 pub struct DataProcessor {
     max_points: usize,
-    channel_a: Vec<(f64, f64)>, // (time_seconds, value)
-    channel_b: Vec<(f64, f64)>, // (time_seconds, value)
-    channel_c: Vec<(f64, f64)>, // (time_seconds, value)
-    channel_d: Vec<(f64, f64)>, // (time_seconds, value)
+    rheocardiogram: Vec<(f64, f64)>,  // (time_seconds, value)
+    base_impedance: Vec<(f64, f64)>,  // (time_seconds, value)
+    ecg: Vec<(f64, f64)>,             // (time_seconds, value)
+    channel4: Vec<(f64, f64)>,        // (time_seconds, value)
+    channel5: Vec<(f64, f64)>,        // (time_seconds, value)
+    channel6: Vec<(f64, f64)>,        // (time_seconds, value)
+    channel7: Vec<(f64, f64)>,        // (time_seconds, value)
+    channel8: Vec<(f64, f64)>,        // (time_seconds, value)
     recorded_data: Vec<RecordedPacket>,
     session_start_time: Option<u64>,
     auto_recording: bool,
-    recording_start_datetime: Option<String>, // Время начала текущей сессии записи в формате строки
-    session_counter: u32, // Счетчик сессий для нумерации файлов
+    recording_start_datetime: Option<String>,
+    session_counter: u32,
 }
 
 impl DataProcessor {
@@ -33,15 +40,19 @@ impl DataProcessor {
         
         Self {
             max_points,
-            channel_a: Vec::with_capacity(max_points),
-            channel_b: Vec::with_capacity(max_points),
-            channel_c: Vec::with_capacity(max_points),
-            channel_d: Vec::with_capacity(max_points),
+            rheocardiogram: Vec::with_capacity(max_points),
+            base_impedance: Vec::with_capacity(max_points),
+            ecg: Vec::with_capacity(max_points),
+            channel4: Vec::with_capacity(max_points),
+            channel5: Vec::with_capacity(max_points),
+            channel6: Vec::with_capacity(max_points),
+            channel7: Vec::with_capacity(max_points),
+            channel8: Vec::with_capacity(max_points),
             recorded_data: Vec::new(),
             session_start_time: None,
             auto_recording: true,
             recording_start_datetime: initial_datetime,
-            session_counter: 1, // Начинаем с 1
+            session_counter: 1,
         }
     }
 
@@ -59,127 +70,108 @@ impl DataProcessor {
         };
 
         // Добавляем в каналы отображения
-        self.add_to_channel_a(time_seconds, packet.channel_a);
-        self.add_to_channel_b(time_seconds, packet.channel_b);
-        self.add_to_channel_c(time_seconds, packet.channel_c);
-        self.add_to_channel_d(time_seconds, packet.channel_d);
+        self.add_to_channel_rheo( time_seconds, packet.rheocardiogram as f64);
+        self.add_to_channel_base( time_seconds, packet.base_impedance as f64);
+        self.add_to_channel_ecg(time_seconds, packet.ecg as f64);
+        self.add_to_channel_ch4( time_seconds, packet.channel4 as f64);
+
 
         // Записываем данные только если автозапись включена
         if self.auto_recording {
             self.recorded_data.push(RecordedPacket {
                 timestamp: packet.timestamp,
                 time_seconds,
-                channel_a: packet.channel_a,
-                channel_b: packet.channel_b,
-                channel_c: packet.channel_c,
-                channel_d: packet.channel_d,
-                status: packet.status,
+                rheocardiogram: packet.rheocardiogram as f64,
+                base_impedance: packet.base_impedance as f64,
+                ecg: packet.ecg as f64,
+                channel4: packet.channel4 as f64,
+                channel5: packet.channel5 as f64,
+                channel6: packet.channel6 as f64,
+                channel7: packet.channel7 as f64,
+                channel8: packet.channel8 as f64,
             });
         }
     }
 
-    fn add_to_channel_a(&mut self, time_seconds: f64, value: f64) {
-        self.channel_a.push((time_seconds, value));
+    fn add_to_channel_ecg(&mut self, time_seconds: f64, value: f64) {
+        self.ecg.push((time_seconds, value));
         // Увеличиваем размер буфера чтобы покрыть максимальный масштаб 60s с запасом
-        if self.channel_a.len() > self.max_points {
-            self.channel_a.remove(0);
+        if self.ecg.len() > self.max_points {
+            self.ecg.remove(0);
         }
     }
-
-    fn add_to_channel_b(&mut self, time_seconds: f64, value: f64) {
-        self.channel_b.push((time_seconds, value));
-        if self.channel_b.len() > self.max_points {
-            self.channel_b.remove(0);
+    
+    fn add_to_channel_rheo(&mut self, time_seconds: f64, value: f64) {
+        self.rheocardiogram.push((time_seconds, value));
+        // Увеличиваем размер буфера чтобы покрыть максимальный масштаб 60s с запасом
+        if self.rheocardiogram.len() > self.max_points {
+            self.rheocardiogram.remove(0);
         }
     }
-
-    fn add_to_channel_c(&mut self, time_seconds: f64, value: f64) {
-        self.channel_c.push((time_seconds, value));
-        if self.channel_c.len() > self.max_points {
-            self.channel_c.remove(0);
+    
+    fn add_to_channel_base(&mut self, time_seconds: f64, value: f64) {
+        self.base_impedance.push((time_seconds, value));
+        // Увеличиваем размер буфера чтобы покрыть максимальный масштаб 60s с запасом
+        if self.base_impedance.len() > self.max_points {
+            self.base_impedance.remove(0);
         }
     }
-
-    fn add_to_channel_d(&mut self, time_seconds: f64, value: f64) {
-        self.channel_d.push((time_seconds, value));
-        if self.channel_d.len() > self.max_points {
-            self.channel_d.remove(0);
+    
+    fn add_to_channel_ch4(&mut self, time_seconds: f64, value: f64) {
+        self.channel4.push((time_seconds, value));
+        // Увеличиваем размер буфера чтобы покрыть максимальный масштаб 60s с запасом
+        if self.channel4.len() > self.max_points {
+            self.channel4.remove(0);
         }
     }
 
     /// Получить максимальное время в данных
     pub fn get_max_time(&self) -> f64 {
-        let max_a = self.channel_a.last().map(|(t, _)| *t).unwrap_or(0.0);
-        let max_b = self.channel_b.last().map(|(t, _)| *t).unwrap_or(0.0);
-        let max_c = self.channel_c.last().map(|(t, _)| *t).unwrap_or(0.0);
-        let max_d = self.channel_d.last().map(|(t, _)| *t).unwrap_or(0.0);
-        max_a.max(max_b).max(max_c)
+        let max_values = [
+            self.rheocardiogram.last().map(|(t, _)| *t).unwrap_or(0.0),
+            self.base_impedance.last().map(|(t, _)| *t).unwrap_or(0.0),
+            self.ecg.last().map(|(t, _)| *t).unwrap_or(0.0),
+            self.channel4.last().map(|(t, _)| *t).unwrap_or(0.0),
+            self.channel5.last().map(|(t, _)| *t).unwrap_or(0.0),
+            self.channel6.last().map(|(t, _)| *t).unwrap_or(0.0),
+            self.channel7.last().map(|(t, _)| *t).unwrap_or(0.0),
+            self.channel8.last().map(|(t, _)| *t).unwrap_or(0.0),
+        ];
+        
+        max_values.iter().fold(0.0, |max, &val| max.max(val))
     }
 
-    /// Получить последнее время в канале A (для синхронизации комбинированного графика)
-    pub fn get_last_time(&self) -> f64 {
-        self.channel_a.last().map(|(t, _)| *t).unwrap_or(0.0)
+    // Методы доступа к каналам
+    pub fn get_rheocardiogram(&self) -> &[(f64, f64)] {
+        &self.rheocardiogram
     }
-
-    // ... остальные методы без изменений ...
-    /// Включить автозапись
-    pub fn start_auto_recording(&mut self) {
-        if !self.auto_recording {
-            self.auto_recording = true;
-            // При включении записи обновляем время начала сессии
-            let now = Local::now();
-            self.recording_start_datetime = Some(now.format("%Y-%m-%d %H-%M-%S").to_string());
-        }
+    
+    pub fn get_base_impedance(&self) -> &[(f64, f64)] {
+        &self.base_impedance
     }
-
-    /// Выключить автозапись
-    pub fn stop_auto_recording(&mut self) {
-        self.auto_recording = false;
+    
+    pub fn get_ecg(&self) -> &[(f64, f64)] {
+        &self.ecg
     }
-
-    /// Получить статус автозаписи
-    pub fn is_auto_recording(&self) -> bool {
-        self.auto_recording
+    
+    pub fn get_channel4(&self) -> &[(f64, f64)] {
+        &self.channel4
     }
-
-    /// Получить время начала записи в формате строки
-    pub fn get_recording_start_datetime(&self) -> Option<&str> {
-        self.recording_start_datetime.as_deref()
+    
+    pub fn get_channel5(&self) -> &[(f64, f64)] {
+        &self.channel5
     }
-
-    /// Получить номер текущей сессии
-    pub fn get_session_counter(&self) -> u32 {
-        self.session_counter
+    
+    pub fn get_channel6(&self) -> &[(f64, f64)] {
+        &self.channel6
     }
-
-    /// Обновить время начала записи на текущее время
-    pub fn update_recording_start_time(&mut self) {
-        let now = Local::now();
-        self.recording_start_datetime = Some(now.format("%Y-%m-%d %H-%M-%S").to_string());
+    
+    pub fn get_channel7(&self) -> &[(f64, f64)] {
+        &self.channel7
     }
-
-    /// Сброс записи и начало новой сессии (полная очистка)
-    pub fn reset_recording(&mut self) {
-        // Полная очистка всех данных
-        self.channel_a.clear();
-        self.channel_b.clear();
-        self.channel_c.clear();
-        self.channel_d.clear();
-        self.recorded_data.clear();
-        self.session_start_time = None;
-        // Обновляем время начала на текущее при сбросе
-        self.update_recording_start_time();
-        // Увеличиваем счетчик сессий
-        self.session_counter += 1;
-    }
-
-    /// Получить время начала текущей сессии записи
-    pub fn get_session_start_time(&self) -> Option<u64> {
-        self.session_start_time
-    }
-
-    pub fn get_recorded_count(&self) -> usize {
-        self.recorded_data.len()
+    
+    pub fn get_channel8(&self) -> &[(f64, f64)] {
+        &self.channel8
     }
 
     pub fn save_to_csv<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
@@ -189,18 +181,31 @@ impl DataProcessor {
 
         let mut wtr = csv::Writer::from_path(path)?;
         
-        // Записываем заголовок с временем в секундах
-        wtr.write_record(&["time_seconds", "channel_a", "channel_b", "channel_c","channel_d", "status"])?;
+        // Записываем заголовок
+        wtr.write_record(&[
+            "time_seconds", 
+            "rheocardiogram", 
+            "base_impedance", 
+            "ecg",
+            "channel4",
+            "channel5",
+            "channel6",
+            "channel7",
+            "channel8"
+        ])?;
 
         // Записываем данные
         for packet in &self.recorded_data {
             wtr.write_record(&[
                 packet.time_seconds.to_string(),
-                packet.channel_a.to_string(),
-                packet.channel_b.to_string(),
-                packet.channel_c.to_string(),
-                packet.channel_d.to_string(),
-                packet.status.to_string(),
+                packet.rheocardiogram.to_string(),
+                packet.base_impedance.to_string(),
+                packet.ecg.to_string(),
+                packet.channel4.to_string(),
+                packet.channel5.to_string(),
+                packet.channel6.to_string(),
+                packet.channel7.to_string(),
+                packet.channel8.to_string(),
             ])?;
         }
 
@@ -208,31 +213,73 @@ impl DataProcessor {
         Ok(())
     }
 
-    pub fn get_channel_a(&self) -> &[(f64, f64)] {
-        &self.channel_a
+    // ... остальные методы (start_auto_recording, stop_auto_recording, etc.)
+    pub fn start_auto_recording(&mut self) {
+        if !self.auto_recording {
+            self.auto_recording = true;
+            let now = Local::now();
+            self.recording_start_datetime = Some(now.format("%Y-%m-%d %H-%M-%S").to_string());
+        }
     }
 
-    pub fn get_channel_b(&self) -> &[(f64, f64)] {
-        &self.channel_b
+    pub fn stop_auto_recording(&mut self) {
+        self.auto_recording = false;
     }
 
-    pub fn get_channel_c(&self) -> &[(f64, f64)] {
-        &self.channel_c
+    pub fn is_auto_recording(&self) -> bool {
+        self.auto_recording
     }
 
-    pub fn get_channel_d(&self) -> &[(f64, f64)] {
-        &self.channel_d
+    pub fn get_recording_start_datetime(&self) -> Option<&str> {
+        self.recording_start_datetime.as_deref()
+    }
+
+    pub fn get_session_counter(&self) -> u32 {
+        self.session_counter
+    }
+
+    pub fn update_recording_start_time(&mut self) {
+        let now = Local::now();
+        self.recording_start_datetime = Some(now.format("%Y-%m-%d %H-%M-%S").to_string());
+    }
+
+    pub fn reset_recording(&mut self) {
+        // Полная очистка всех каналов
+        self.rheocardiogram.clear();
+        self.base_impedance.clear();
+        self.ecg.clear();
+        self.channel4.clear();
+        self.channel5.clear();
+        self.channel6.clear();
+        self.channel7.clear();
+        self.channel8.clear();
+        self.recorded_data.clear();
+        self.session_start_time = None;
+        self.update_recording_start_time();
+        self.session_counter += 1;
+    }
+
+    pub fn get_session_start_time(&self) -> Option<u64> {
+        self.session_start_time
+    }
+
+    pub fn get_recorded_count(&self) -> usize {
+        self.recorded_data.len()
     }
 
     pub fn clear(&mut self) {
-        self.channel_a.clear();
-        self.channel_b.clear();
-        self.channel_c.clear();
-        self.channel_d.clear();
+        self.rheocardiogram.clear();
+        self.base_impedance.clear();
+        self.ecg.clear();
+        self.channel4.clear();
+        self.channel5.clear();
+        self.channel6.clear();
+        self.channel7.clear();
+        self.channel8.clear();
         self.recorded_data.clear();
         self.session_start_time = None;
         self.auto_recording = true;
         self.update_recording_start_time();
-        self.session_counter = 1; // Сбрасываем счетчик
+        self.session_counter = 1;
     }
 }

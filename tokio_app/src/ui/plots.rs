@@ -84,26 +84,26 @@ impl PlotManager {
 
                 // Канал A
                 ui.heading("Channel A");
-                Self::show_channel_plot(ui, data_processor.get_channel_a(), "Channel A", self.current_view_end, self.time_scale);
+                Self::show_channel_plot(ui, data_processor.get_ecg(), "Channel A", self.current_view_end, self.time_scale);
 
                 ui.separator();
 
                 // Канал B
                 ui.heading("Channel B");
-                Self::show_channel_plot(ui, data_processor.get_channel_b(), "Channel B", self.current_view_end, self.time_scale);
+                Self::show_channel_plot(ui, data_processor.get_rheocardiogram(), "Channel B", self.current_view_end, self.time_scale);
 
                 ui.separator();
 
                 // Канал C
                 ui.heading("Channel C");
-                Self::show_channel_plot(ui, data_processor.get_channel_c(), "Channel C", self.current_view_end, self.time_scale);
+                Self::show_channel_plot(ui, data_processor.get_base_impedance(), "Channel C", self.current_view_end, self.time_scale);
 
                 ui.separator();
 
 
                 // Канал D
                 ui.heading("Channel D");
-                Self::show_channel_plot(ui, data_processor.get_channel_d(), "Channel D", self.current_view_end, self.time_scale);
+                Self::show_channel_plot(ui, data_processor.get_channel4(), "Channel D", self.current_view_end, self.time_scale);
 
                 ui.separator();
 
@@ -165,7 +165,7 @@ impl PlotManager {
 
         plot.show(ui, |plot_ui| {
             // Канал A - фильтруем данные перед созданием PlotPoints
-            let channel_a_filtered: Vec<(f64, f64)> = data_processor.get_channel_a()
+            let channel_a_filtered: Vec<(f64, f64)> = data_processor.get_ecg()
                 .iter()
                 .filter(|(time, _)| *time >= view_start && *time <= view_end)
                 .cloned()
@@ -181,7 +181,7 @@ impl PlotManager {
             }
 
             // Канал B - фильтруем данные перед созданием PlotPoints
-            let channel_b_filtered: Vec<(f64, f64)> = data_processor.get_channel_b()
+            let channel_b_filtered: Vec<(f64, f64)> = data_processor.get_rheocardiogram()
                 .iter()
                 .filter(|(time, _)| *time >= view_start && *time <= view_end)
                 .cloned()
@@ -197,7 +197,7 @@ impl PlotManager {
             }
 
             // Канал C - фильтруем данные перед созданием PlotPoints
-            let channel_c_filtered: Vec<(f64, f64)> = data_processor.get_channel_c()
+            let channel_c_filtered: Vec<(f64, f64)> = data_processor.get_base_impedance()
                 .iter()
                 .filter(|(time, _)| *time >= view_start && *time <= view_end)
                 .cloned()
@@ -213,7 +213,7 @@ impl PlotManager {
             }
 
             // Канал D - фильтруем данные перед созданием PlotPoints
-            let channel_d_filtered: Vec<(f64, f64)> = data_processor.get_channel_d()
+            let channel_d_filtered: Vec<(f64, f64)> = data_processor.get_channel4()
                 .iter()
                 .filter(|(time, _)| *time >= view_start && *time <= view_end)
                 .cloned()

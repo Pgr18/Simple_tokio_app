@@ -82,28 +82,33 @@ impl PlotManager {
 
                 ui.separator();
 
-                // Канал A
-                ui.heading("Channel A");
-                Self::show_channel_plot(ui, data_processor.get_ecg(), "Channel A", self.current_view_end, self.time_scale);
+                // ЭКГ
+                ui.heading("ЭКГ");
+                Self::show_channel_plot(ui, data_processor.get_ecg(), "ЭКГ", self.current_view_end, self.time_scale);
 
                 ui.separator();
 
-                // Канал B
-                ui.heading("Channel B");
-                Self::show_channel_plot(ui, data_processor.get_rheocardiogram(), "Channel B", self.current_view_end, self.time_scale);
+                // РЕО-1
+                ui.heading("РЕО-1");
+                Self::show_channel_plot(ui, data_processor.get_rheocardiogram(), "РЕО-1", self.current_view_end, self.time_scale);
 
                 ui.separator();
 
-                // Канал C
-                ui.heading("Channel C");
-                Self::show_channel_plot(ui, data_processor.get_base_impedance(), "Channel C", self.current_view_end, self.time_scale);
+                // BASE-1
+                ui.heading("BASE-1");
+                Self::show_channel_plot(ui, data_processor.get_base_impedance(), "BASE-1", self.current_view_end, self.time_scale);
 
                 ui.separator();
 
+                // РЕО-2
+                ui.heading("РЕО-2");
+                Self::show_channel_plot(ui, data_processor.get_rheo2(), "РЕО-2", self.current_view_end, self.time_scale);
 
-                // Канал D
-                ui.heading("Channel D");
-                Self::show_channel_plot(ui, data_processor.get_channel4(), "Channel D", self.current_view_end, self.time_scale);
+                ui.separator();
+
+                // BASE-2
+                ui.heading("BASE-2");
+                Self::show_channel_plot(ui, data_processor.get_base2(), "BASE-2", self.current_view_end, self.time_scale);
 
                 ui.separator();
 
@@ -164,68 +169,28 @@ impl PlotManager {
             .legend(egui_plot::Legend::default());
 
         plot.show(ui, |plot_ui| {
-            // Канал A - фильтруем данные перед созданием PlotPoints
-            let channel_a_filtered: Vec<(f64, f64)> = data_processor.get_ecg()
-                .iter()
-                .filter(|(time, _)| *time >= view_start && *time <= view_end)
-                .cloned()
-                .collect();
-            
-            if !channel_a_filtered.is_empty() {
-                let points_a: PlotPoints = channel_a_filtered
-                    .iter()
-                    .map(|(time_seconds, value)| [*time_seconds, *value])
-                    .collect();
-                let line_a = Line::new(points_a).name("Channel A");
-                plot_ui.line(line_a);
-            }
+            let channels = [
+                (data_processor.get_ecg(), "ЭКГ"),
+                (data_processor.get_rheocardiogram(), "РЕО-1"),
+                (data_processor.get_base_impedance(), "BASE-1"),
+                (data_processor.get_rheo2(), "РЕО-2"),
+                (data_processor.get_base2(), "BASE-2"),
+            ];
 
-            // Канал B - фильтруем данные перед созданием PlotPoints
-            let channel_b_filtered: Vec<(f64, f64)> = data_processor.get_rheocardiogram()
-                .iter()
-                .filter(|(time, _)| *time >= view_start && *time <= view_end)
-                .cloned()
-                .collect();
-            
-            if !channel_b_filtered.is_empty() {
-                let points_b: PlotPoints = channel_b_filtered
+            for (data, name) in channels {
+                let filtered: Vec<(f64, f64)> = data
                     .iter()
-                    .map(|(time_seconds, value)| [*time_seconds, *value])
+                    .filter(|(time, _)| *time >= view_start && *time <= view_end)
+                    .cloned()
                     .collect();
-                let line_b = Line::new(points_b).name("Channel B");
-                plot_ui.line(line_b);
-            }
 
-            // Канал C - фильтруем данные перед созданием PlotPoints
-            let channel_c_filtered: Vec<(f64, f64)> = data_processor.get_base_impedance()
-                .iter()
-                .filter(|(time, _)| *time >= view_start && *time <= view_end)
-                .cloned()
-                .collect();
-            
-            if !channel_c_filtered.is_empty() {
-                let points_c: PlotPoints = channel_c_filtered
-                    .iter()
-                    .map(|(time_seconds, value)| [*time_seconds, *value])
-                    .collect();
-                let line_c = Line::new(points_c).name("Channel C");
-                plot_ui.line(line_c);
-            }
-
-            // Канал D - фильтруем данные перед созданием PlotPoints
-            let channel_d_filtered: Vec<(f64, f64)> = data_processor.get_channel4()
-                .iter()
-                .filter(|(time, _)| *time >= view_start && *time <= view_end)
-                .cloned()
-                .collect();
-            
-            if !channel_d_filtered.is_empty() {
-                let points_d: PlotPoints = channel_d_filtered
-                    .iter()
-                    .map(|(time_seconds, value)| [*time_seconds, *value])
-                    .collect();
-                let line_d = Line::new(points_d).name("Channel D");
-                plot_ui.line(line_d);
+                if !filtered.is_empty() {
+                    let points: PlotPoints = filtered
+                        .iter()
+                        .map(|(time_seconds, value)| [*time_seconds, *value])
+                        .collect();
+                    plot_ui.line(Line::new(points).name(name));
+                }
             }
         });
     }

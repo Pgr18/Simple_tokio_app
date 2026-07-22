@@ -1,10 +1,14 @@
 use eframe::egui;
-use crate::com_port::{ComPortReader, MedicalProtocolParser};
+use crate::com_port::{find_rcm_port_among, ComPortReader, SerialConfig};
 use crate::data::processor::DataProcessor;
-use super::plots::{PlotManager, TimeScale};
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use super::plots::PlotManager;
 use dirs::download_dir;
+use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+
+enum DiscoverMsg {
+    Done(Result<String, String>),
+}
 
 pub struct MainWindow {
     com_reader: ComPortReader,
@@ -15,6 +19,10 @@ pub struct MainWindow {
     is_connected: bool,
     available_ports: Vec<String>,
     save_directory: PathBuf,
+    port_status: String,
+    discovering: bool,
+    discover_rx: Option<Receiver<DiscoverMsg>>,
+    auto_find_on_start: bool,
 }
 
 impl Default for MainWindow {
@@ -25,25 +33,24 @@ impl Default for MainWindow {
 
 impl MainWindow {
     pub fn new() -> Self {
-        let parser = Box::new(MedicalProtocolParser);
-        let com_reader = ComPortReader::new(parser);
+        let com_reader = ComPortReader::new();
         let available_ports = ComPortReader::available_ports();
-        
-        // Устанавливаем директорию для сохранения по умолчанию: Downloads/gui-app/ГГГГ-ММ-ДД
         let save_directory = Self::get_default_save_directory();
-        
-        // Увеличиваем размер буфера для отображения до 6000 точек (100 точек/секунду × 60 секунд)
-        let display_buffer_size = 6000;
-        
+        let display_buffer_size = 14_000;
+
         Self {
             com_reader,
             data_processor: DataProcessor::new(display_buffer_size),
             plot_manager: PlotManager::new(),
             selected_port: String::new(),
-            baud_rate: 9600,
+            baud_rate: 38400,
             is_connected: false,
             available_ports,
             save_directory,
+            port_status: "Готов к автопоиску прибора".into(),
+            discovering: false,
+            discover_rx: None,
+            auto_find_on_start: true,
         }
     }
 
@@ -106,11 +113,84 @@ impl MainWindow {
         if self.is_connected {
             self.com_reader.disconnect();
             self.is_connected = false;
+            self.port_status = "Отключено".into();
         } else if !self.selected_port.is_empty() {
             if let Err(e) = self.com_reader.connect(&self.selected_port, self.baud_rate) {
-                eprintln!("Failed to connect: {}", e);
+                self.port_status = format!("Ошибка подключения: {e}");
+                eprintln!("Failed to connect: {e}");
             } else {
                 self.is_connected = true;
+                self.port_status = format!("Подключено: {}", self.selected_port);
+            }
+        } else {
+            self.start_auto_discover();
+        }
+    }
+
+    /// Запускает поиск прибора в фоне: слушает каждый COM ~400 мс и ищет валидные кадры РКМ.
+    fn start_auto_discover(&mut self) {
+        if self.discovering {
+            return;
+        }
+        if self.is_connected {
+            self.com_reader.disconnect();
+            self.is_connected = false;
+        }
+
+        self.update_ports_list();
+        let ports = self.available_ports.clone();
+        if ports.is_empty() {
+            self.port_status = "COM-порты не найдены".into();
+            return;
+        }
+
+        let mut cfg = SerialConfig::default();
+        cfg.baud_rate = self.baud_rate;
+        let (tx, rx) = mpsc::channel();
+        self.discover_rx = Some(rx);
+        self.discovering = true;
+        self.port_status = format!("Поиск прибора на {} портах…", ports.len());
+
+        std::thread::spawn(move || {
+            let result = match find_rcm_port_among(ports, &cfg) {
+                Some(probe) => Ok(probe.port_name),
+                None => Err("Прибор РКМ/РКМ-С не найден".into()),
+            };
+            let _ = tx.send(DiscoverMsg::Done(result));
+        });
+    }
+
+    fn poll_discover(&mut self) {
+        let Some(rx) = self.discover_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(DiscoverMsg::Done(Ok(port))) => {
+                self.discovering = false;
+                self.discover_rx = None;
+                self.selected_port = port.clone();
+                self.update_ports_list();
+                match self.com_reader.connect(&port, self.baud_rate) {
+                    Ok(()) => {
+                        self.is_connected = true;
+                        self.port_status = format!("Найден и подключен: {port}");
+                    }
+                    Err(e) => {
+                        self.is_connected = false;
+                        self.port_status = format!("Найден {port}, но не удалось открыть: {e}");
+                    }
+                }
+            }
+            Ok(DiscoverMsg::Done(Err(msg))) => {
+                self.discovering = false;
+                self.discover_rx = None;
+                self.port_status = msg;
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.discovering = false;
+                self.discover_rx = None;
+                self.port_status = "Поиск прерван".into();
             }
         }
     }
@@ -221,26 +301,35 @@ impl MainWindow {
 
 impl eframe::App for MainWindow {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Обрабатываем горячие клавиши
+        if self.auto_find_on_start {
+            self.auto_find_on_start = false;
+            self.start_auto_discover();
+        }
+
+        self.poll_discover();
+        if self.discovering {
+            ctx.request_repaint();
+        }
+
         self.handle_hotkeys(ctx);
 
-        // Чтение данных из COM-порта
-        if let Some(packet) = self.com_reader.read_data() {
-            self.data_processor.add_packet(packet);
+        if self.is_connected {
+            if let Some(packet) = self.com_reader.read_data() {
+                self.data_processor.add_packet(packet);
+            }
         }
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                // Секция COM-порта
                 ui.vertical(|ui| {
                     ui.heading("COM Port");
                     ui.horizontal(|ui| {
                         ui.label("Port:");
-                        
+
                         if ui.button("🔄").clicked() {
                             self.update_ports_list();
                         }
-                        
+
                         egui::ComboBox::from_id_source("port_selector")
                             .selected_text(if self.selected_port.is_empty() {
                                 "Select port".to_string()
@@ -254,19 +343,43 @@ impl eframe::App for MainWindow {
                             });
 
                         ui.label("Baud:");
-                        ui.add(egui::DragValue::new(&mut self.baud_rate).speed(1).clamp_range(9600..=115200));
+                        ui.add(
+                            egui::DragValue::new(&mut self.baud_rate)
+                                .speed(100)
+                                .clamp_range(1200..=115200),
+                        );
 
-                        let button_text = if self.is_connected { "Disconnect" } else { "Connect" };
-                        if ui.button(button_text).clicked() {
+                        let find_enabled = !self.discovering && !self.is_connected;
+                        if ui
+                            .add_enabled(find_enabled, egui::Button::new("🔍 Автопоиск"))
+                            .on_hover_text("Сканирует COM-порты и ищет поток кадров РКМ/РКМ-С")
+                            .clicked()
+                        {
+                            self.start_auto_discover();
+                        }
+
+                        let button_text = if self.is_connected {
+                            "Disconnect"
+                        } else {
+                            "Connect"
+                        };
+                        if ui
+                            .add_enabled(!self.discovering, egui::Button::new(button_text))
+                            .clicked()
+                        {
                             self.connect_disconnect();
                         }
 
-                        if self.is_connected {
+                        if self.discovering {
+                            ui.spinner();
+                            ui.colored_label(egui::Color32::YELLOW, "● Searching");
+                        } else if self.is_connected {
                             ui.colored_label(egui::Color32::GREEN, "● Connected");
                         } else {
                             ui.colored_label(egui::Color32::RED, "● Disconnected");
                         }
                     });
+                    ui.label(&self.port_status);
                 });
 
                 ui.separator();

@@ -1,0 +1,142 @@
+   0.308733100s  INFO prepare_target{force=false package_id=com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app) target="com_port_plotter"}: cargo::core::compiler::fingerprint: fingerprint error for com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("com_port_plotter", ["lib"], "D:\\Simple_tokio_app\\tokio_app\\src\\lib.rs", Edition2021) }
+   0.308817000s  INFO prepare_target{force=false package_id=com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app) target="com_port_plotter"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\Simple_tokio_app\tokio_app\target\debug\.fingerprint\com-port-plotter-75ea297ef9d134ba\lib-com_port_plotter`
+
+Caused by:
+    Не удается найти указанный файл. (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_repo
+   6: git_filter_source_repo
+   7: git_filter_source_repo
+   8: git_filter_source_repo
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_libgit2_prerelease
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+   0.362914000s  INFO prepare_target{force=false package_id=com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app) target="com_port_plotter"}: cargo::core::compiler::fingerprint: fingerprint error for com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("com_port_plotter", ["lib"], "D:\\Simple_tokio_app\\tokio_app\\src\\lib.rs", Edition2021) }
+   0.362950900s  INFO prepare_target{force=false package_id=com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app) target="com_port_plotter"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\Simple_tokio_app\tokio_app\target\debug\.fingerprint\com-port-plotter-1569a8495cf96402\test-lib-com_port_plotter`
+
+Caused by:
+    Не удается найти указанный файл. (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_repo
+   6: git_filter_source_repo
+   7: git_filter_source_repo
+   8: git_filter_source_repo
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_libgit2_prerelease
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+   0.364124200s  INFO prepare_target{force=false package_id=com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app) target="com-port-plotter"}: cargo::core::compiler::fingerprint: fingerprint error for com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app)/Check { test: false }/TargetInner { name: "com-port-plotter", doc: true, ..: with_path("D:\\Simple_tokio_app\\tokio_app\\src\\main.rs", Edition2021) }
+   0.364150700s  INFO prepare_target{force=false package_id=com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app) target="com-port-plotter"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\Simple_tokio_app\tokio_app\target\debug\.fingerprint\com-port-plotter-f964dc43ed0f3b58\bin-com-port-plotter`
+
+Caused by:
+    Не удается найти указанный файл. (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_repo
+   6: git_filter_source_repo
+   7: git_filter_source_repo
+   8: git_filter_source_repo
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_libgit2_prerelease
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+   0.365142200s  INFO prepare_target{force=false package_id=com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app) target="com-port-plotter"}: cargo::core::compiler::fingerprint: fingerprint error for com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app)/Check { test: true }/TargetInner { name: "com-port-plotter", doc: true, ..: with_path("D:\\Simple_tokio_app\\tokio_app\\src\\main.rs", Edition2021) }
+   0.365160100s  INFO prepare_target{force=false package_id=com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app) target="com-port-plotter"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\Simple_tokio_app\tokio_app\target\debug\.fingerprint\com-port-plotter-7cf573c7626d84dc\test-bin-com-port-plotter`
+
+Caused by:
+    Не удается найти указанный файл. (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_repo
+   6: git_filter_source_repo
+   7: git_filter_source_repo
+   8: git_filter_source_repo
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_libgit2_prerelease
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+   0.366100000s  INFO prepare_target{force=false package_id=com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app) target="rcm_fixture"}: cargo::core::compiler::fingerprint: fingerprint error for com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app)/Check { test: true }/TargetInner { kind: "test", name: "rcm_fixture", benched: false, ..: with_path("D:\\Simple_tokio_app\\tokio_app\\tests\\rcm_fixture.rs", Edition2021) }
+   0.366118400s  INFO prepare_target{force=false package_id=com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app) target="rcm_fixture"}: cargo::core::compiler::fingerprint:     err: failed to read `D:\Simple_tokio_app\tokio_app\target\debug\.fingerprint\com-port-plotter-65363f1d119019ab\test-integration-test-rcm_fixture`
+
+Caused by:
+    Не удается найти указанный файл. (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_repo
+   6: git_filter_source_repo
+   7: git_filter_source_repo
+   8: git_filter_source_repo
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_libgit2_prerelease
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+    Checking com-port-plotter v0.1.0 (D:\Simple_tokio_app\tokio_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.77s

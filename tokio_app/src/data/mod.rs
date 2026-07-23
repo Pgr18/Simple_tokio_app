@@ -9,4 +9,4 @@ pub use bin_playback::{guess_profile_from_path, load_bin_file, BinLoadResult, Bi
 pub use calib::RcmCalibration;
 pub use live_worker::{LiveEvent, LivePoint, LiveWorker};
 pub use processor::DataProcessor;
-pub use rcm_pipeline::{RcmOutSample, RcmPipeline, RcmProfile};
+pub use rcm_pipeline::{ChannelFilterFlags, RcmOutSample, RcmPipeline, RcmProfile};

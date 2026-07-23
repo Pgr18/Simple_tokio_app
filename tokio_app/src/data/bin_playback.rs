@@ -1,12 +1,12 @@
-//! Офлайн-проигрывание `.bin` дампов SerialService (как `tests/fixtures/*.bin`).
+//! Офлайн-проигрывание `.bin` дампов (как `tests/fixtures/*.bin`).
 //!
-//! На диске — сырые UART-байты (20-байтные кадры). Как в JavaFX
-//! (`FileReadingService` → interceptor → converter), после sync кадры
-//! прогоняются через `RcmPipeline` (Ohm / FIR / сглаживание).
+//! Sync → пайплайн с выбираемыми фильтрами по каналам.
 
 use crate::com_port::sync::FrameSynchronizer;
 use crate::data::live_worker::LivePoint;
-use crate::data::rcm_pipeline::{RcmOutSample, RcmPipeline, RcmProfile, SAMPLE_RATE_HZ};
+use crate::data::rcm_pipeline::{
+    ChannelFilterFlags, RcmOutSample, RcmPipeline, RcmProfile, SAMPLE_RATE_HZ,
+};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -19,6 +19,7 @@ pub struct BinLoadStats {
     pub samples_out: usize,
     pub duration_s: f64,
     pub profile: RcmProfile,
+    pub filters: ChannelFilterFlags,
 }
 
 #[derive(Debug, Clone)]
@@ -27,16 +28,20 @@ pub struct BinLoadResult {
     pub stats: BinLoadStats,
 }
 
-/// Загружает `.bin`: sync → `RcmPipeline` → точки графика (как JavaFX).
-pub fn load_bin_file(path: &Path, profile: RcmProfile) -> Result<BinLoadResult, String> {
+pub fn load_bin_file(
+    path: &Path,
+    profile: RcmProfile,
+    flags: ChannelFilterFlags,
+) -> Result<BinLoadResult, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("не прочитать {}: {e}", path.display()))?;
-    decode_bin_bytes(&bytes, path.to_path_buf(), profile)
+    decode_bin_bytes(&bytes, path.to_path_buf(), profile, flags)
 }
 
 pub fn decode_bin_bytes(
     bytes: &[u8],
     path: PathBuf,
     profile: RcmProfile,
+    flags: ChannelFilterFlags,
 ) -> Result<BinLoadResult, String> {
     let mut sync = if profile == RcmProfile::Rcms {
         FrameSynchronizer::new_rcms()
@@ -53,20 +58,20 @@ pub fn decode_bin_bytes(
     let remaining = sync.buffer_len();
     let n_frames = frames.len();
 
-    let mut pipeline = RcmPipeline::new(profile);
+    let mut pipeline = RcmPipeline::new_with_flags(profile, flags);
     let mut points = Vec::with_capacity(n_frames);
-    let mut sample_index: u64 = 0;
+    let mut out_index: u64 = 0;
 
     for raw in &frames {
-        let t = sample_index as f64 / SAMPLE_RATE_HZ;
-        sample_index += 1;
         for s in pipeline.process_raw(raw) {
+            let t = out_index as f64 / SAMPLE_RATE_HZ;
+            out_index += 1;
             points.push(out_to_point(t, &s));
         }
     }
 
     let samples_out = points.len();
-    let duration_s = sample_index as f64 / SAMPLE_RATE_HZ;
+    let duration_s = out_index as f64 / SAMPLE_RATE_HZ;
 
     Ok(BinLoadResult {
         points,
@@ -79,12 +84,12 @@ pub fn decode_bin_bytes(
             samples_out,
             duration_s,
             profile,
+            filters: flags,
         },
     })
 }
 
 fn out_to_point(time_seconds: f64, s: &RcmOutSample) -> LivePoint {
-    // Как live_worker / Java Option.INVERSE на РЕО.
     LivePoint {
         time_seconds,
         rheo1: -(s.rheo1 as f64),
@@ -97,7 +102,6 @@ fn out_to_point(time_seconds: f64, s: &RcmOutSample) -> LivePoint {
     }
 }
 
-/// Угадать профиль по имени файла (`*rcms*` → RCMS, иначе RCM).
 pub fn guess_profile_from_path(path: &Path) -> RcmProfile {
     let name = path
         .file_name()
@@ -135,10 +139,14 @@ mod tests {
             bytes.extend_from_slice(&f);
         }
 
-        let r = decode_bin_bytes(&bytes, PathBuf::from("synth.bin"), RcmProfile::Rcms)
-            .expect("decode");
+        let r = decode_bin_bytes(
+            &bytes,
+            PathBuf::from("synth.bin"),
+            RcmProfile::Rcms,
+            ChannelFilterFlags::default(),
+        )
+        .expect("decode");
         assert!(r.stats.frames >= 399, "frames={}", r.stats.frames);
-        // После прогрева FIR точек меньше, чем кадров.
         assert!(!r.points.is_empty());
         assert!(r.stats.duration_s > 1.0);
     }

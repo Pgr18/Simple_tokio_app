@@ -3,10 +3,11 @@ use crate::com_port::{find_rcm_port_among, list_port_names, ProbeResult};
 use crate::data::bin_playback::{guess_profile_from_path, load_bin_file, BinLoadResult};
 use crate::data::live_worker::{LiveEvent, LiveWorker};
 use crate::data::processor::DataProcessor;
-use crate::data::RcmProfile;
+use crate::data::{ChannelFilterFlags, RcmProfile};
 use super::plots::PlotManager;
 use dirs::download_dir;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 enum DiscoverMsg {
@@ -33,6 +34,10 @@ pub struct MainWindow {
     loading_bin: bool,
     bin_rx: Option<Receiver<BinMsg>>,
     bin_status: String,
+    /// Последний открытый .bin — для перезагрузки при смене фильтров.
+    last_bin_path: Option<PathBuf>,
+    /// Пресеты фильтров по имени файла.
+    filter_presets: HashMap<String, ChannelFilterFlags>,
 }
 
 impl Default for MainWindow {
@@ -75,6 +80,8 @@ impl MainWindow {
             loading_bin: false,
             bin_rx: None,
             bin_status: String::new(),
+            last_bin_path: None,
+            filter_presets: load_filter_presets(),
         }
     }
 
@@ -149,7 +156,7 @@ impl MainWindow {
             port.to_string(),
             self.baud_rate,
             self.data_processor.profile(),
-            self.data_processor.filters_enabled(),
+            self.data_processor.channel_filters(),
         )?;
         self.live = Some(worker);
         self.is_connected = true;
@@ -305,7 +312,7 @@ impl MainWindow {
         }
         let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures");
         let dialog = rfd::FileDialog::new()
-            .set_title("Открыть сырой дамп РКМ/РКМ-С (.bin)")
+            .set_title("Открыть дамп РКМ/РКМ-С (.bin)")
             .add_filter("RCM binary", &["bin"])
             .add_filter("All", &["*"]);
         let dialog = if fixtures.is_dir() {
@@ -320,11 +327,24 @@ impl MainWindow {
         // Остановить live COM — смотрим файл.
         self.stop_live();
 
+        let key = bin_preset_key(&path);
+        if let Some(flags) = self.filter_presets.get(&key).copied() {
+            self.data_processor.set_channel_filters(flags);
+        }
+
         let guessed = guess_profile_from_path(&path);
         if guessed != self.data_processor.profile() {
             self.data_processor.set_profile(guessed);
         }
+        self.start_bin_load(path);
+    }
+
+    fn start_bin_load(&mut self, path: PathBuf) {
+        if self.loading_bin {
+            return;
+        }
         let profile = self.data_processor.profile();
+        let flags = self.data_processor.channel_filters();
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -333,13 +353,44 @@ impl MainWindow {
         let (tx, rx) = mpsc::channel();
         self.bin_rx = Some(rx);
         self.loading_bin = true;
+        self.last_bin_path = Some(path.clone());
         self.bin_status = format!("Загрузка {name}…");
         self.port_status = self.bin_status.clone();
 
         std::thread::spawn(move || {
-            let result = load_bin_file(&path, profile);
+            let result = load_bin_file(&path, profile, flags);
             let _ = tx.send(BinMsg::Done(result));
         });
+    }
+
+    fn reload_last_bin(&mut self) {
+        let Some(path) = self.last_bin_path.clone() else {
+            return;
+        };
+        if self.loading_bin || self.is_connected {
+            return;
+        }
+        self.start_bin_load(path);
+    }
+
+    fn apply_channel_filters(&mut self, flags: ChannelFilterFlags) {
+        if flags == self.data_processor.channel_filters() {
+            return;
+        }
+        self.data_processor.set_channel_filters(flags);
+        if let Some(live) = self.live.as_ref() {
+            live.set_channel_filters(flags);
+        }
+        self.plot_manager.reset_y_bounds();
+
+        if let Some(path) = self.last_bin_path.clone() {
+            let key = bin_preset_key(&path);
+            self.filter_presets.insert(key, flags);
+            save_filter_presets(&self.filter_presets);
+            if !self.is_connected {
+                self.reload_last_bin();
+            }
+        }
     }
 
     fn poll_bin_load(&mut self) {
@@ -388,10 +439,19 @@ impl MainWindow {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| stats.path.display().to_string());
         self.bin_status = format!(
-            "{name}: {} байт → {} кадров → {} сэмплов, resync={}, {:.1} с (с фильтрами)",
-            stats.bytes, stats.frames, stats.samples_out, stats.resyncs, stats.duration_s
+            "{name}: {} байт → {} кадров → {} сэмплов, resync={}, {:.1} с {}",
+            stats.bytes,
+            stats.frames,
+            stats.samples_out,
+            stats.resyncs,
+            stats.duration_s,
+            format_filter_flags(stats.filters)
         );
         self.port_status = self.bin_status.clone();
+
+        let key = bin_preset_key(&stats.path);
+        self.filter_presets.insert(key, stats.filters);
+        save_filter_presets(&self.filter_presets);
     }
 
     fn save_recorded_data(&mut self) {
@@ -556,7 +616,7 @@ impl eframe::App for MainWindow {
 
                         if ui
                             .add_enabled(!self.loading_bin, egui::Button::new("📂 Open .bin"))
-                            .on_hover_text("Открыть сырой дамп (как tests/fixtures/*.bin) и показать на графиках")
+                            .on_hover_text("Открыть .bin: ЭКГ+BASE с фильтрами, РЕО сырой")
                             .clicked()
                         {
                             self.open_bin_dialog();
@@ -609,16 +669,19 @@ impl eframe::App for MainWindow {
                             self.plot_manager.reset_y_bounds();
                         }
 
-                        let mut filters_on = self.data_processor.filters_enabled();
-                        if ui.checkbox(&mut filters_on, "Фильтры").changed() {
-                            self.data_processor.set_filters_enabled(filters_on);
-                            if let Some(live) = self.live.as_ref() {
-                                live.set_filters(filters_on);
-                            }
-                            self.plot_manager.reset_y_bounds();
+                        let mut flags = self.data_processor.channel_filters();
+                        ui.label("Фильтры:");
+                        let mut changed = false;
+                        changed |= ui.checkbox(&mut flags.ecg, "ЭКГ").changed();
+                        changed |= ui.checkbox(&mut flags.base1, "BASE-1").changed();
+                        changed |= ui.checkbox(&mut flags.base2, "BASE-2").changed();
+                        changed |= ui.checkbox(&mut flags.rheo1, "РЕО-1").changed();
+                        changed |= ui.checkbox(&mut flags.rheo2, "РЕО-2").changed();
+                        if changed {
+                            self.apply_channel_filters(flags);
                         }
-                        if filters_on {
-                            ui.weak("(DSP offline, BASE FIR ~1.7s)");
+                        if flags.base1 || flags.base2 {
+                            ui.weak("(BASE FIR ~1.7s)");
                         }
                     });
                 });
@@ -738,5 +801,60 @@ impl eframe::App for MainWindow {
 
         // Запрос обновления для анимации
         ctx.request_repaint();
+    }
+}
+
+fn bin_preset_key(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn format_filter_flags(f: ChannelFilterFlags) -> String {
+    let mut on = Vec::new();
+    if f.ecg {
+        on.push("ЭКГ");
+    }
+    if f.base1 {
+        on.push("BASE-1");
+    }
+    if f.base2 {
+        on.push("BASE-2");
+    }
+    if f.rheo1 {
+        on.push("РЕО-1");
+    }
+    if f.rheo2 {
+        on.push("РЕО-2");
+    }
+    if on.is_empty() {
+        "(все сырые)".into()
+    } else {
+        format!("(фильтры: {})", on.join("+"))
+    }
+}
+
+fn filter_presets_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("com-port-plotter")
+        .join("channel_filters.json")
+}
+
+fn load_filter_presets() -> HashMap<String, ChannelFilterFlags> {
+    let path = filter_presets_path();
+    match std::fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn save_filter_presets(map: &HashMap<String, ChannelFilterFlags>) {
+    let path = filter_presets_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(s) = serde_json::to_string_pretty(map) {
+        let _ = std::fs::write(path, s);
     }
 }

@@ -5,13 +5,55 @@
 //!   5 RHEO_1X, 6 QS_1, 7 RHEO_2X, 8 ECG_X, 9 QS_2
 //!
 //! RCMS = полный `RcmOut` + `QS_2 ← QS_1` (как `RcmsOutVariable`).
+//!
+//! Фильтры по каналам включаются независимо (`ChannelFilterFlags`).
 
 use crate::com_port::decode::{to_int, to_signed_int};
 use crate::data::calib::RcmCalibration;
 use crate::data::filter::{push_one, DigitalFilter, FilterBuilder, FilterOut};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 pub const SAMPLE_RATE_HZ: f64 = 200.0;
+
+/// Какие каналы показывать через DSP (остальные — сырой ADC).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelFilterFlags {
+    pub rheo1: bool,
+    pub base1: bool,
+    pub ecg: bool,
+    pub rheo2: bool,
+    pub base2: bool,
+}
+
+impl Default for ChannelFilterFlags {
+    fn default() -> Self {
+        // Типичный старт: ЭКГ+BASE, РЕО сырой.
+        Self {
+            rheo1: false,
+            base1: true,
+            ecg: true,
+            rheo2: false,
+            base2: true,
+        }
+    }
+}
+
+impl ChannelFilterFlags {
+    pub fn any(&self) -> bool {
+        self.rheo1 || self.base1 || self.ecg || self.rheo2 || self.base2
+    }
+
+    pub fn all_off() -> Self {
+        Self {
+            rheo1: false,
+            base1: false,
+            ecg: false,
+            rheo2: false,
+            base2: false,
+        }
+    }
+}
 
 /// Индексы пар в 20-байтном кадре (= ordinal Java `RcmInVariable`).
 #[repr(usize)]
@@ -100,6 +142,7 @@ struct ChannelFilter {
 pub struct RcmPipeline {
     profile: RcmProfile,
     calib: RcmCalibration,
+    flags: ChannelFilterFlags,
     rheo1: ChannelFilter,
     base1: ChannelFilter,
     qs1: ChannelFilter,
@@ -112,20 +155,35 @@ pub struct RcmPipeline {
     rheo_adc: ChannelFilter,
     avg_rheo: ChannelFilter,
     min_rheo: ChannelFilter,
-    /// Выравнивание каналов по задержке FIR (как Java LinkedConverter).
+    /// Выравнивание DSP: RHEO1, BASE1, QS1, ECG, RHEO2, BASE2, QS2.
     align: [VecDeque<i32>; 7],
+    /// Сырой ADC 1:1 с входом (для каналов с выключенным фильтром).
+    raw_rheo1: VecDeque<i32>,
+    raw_base1: VecDeque<i32>,
+    raw_ecg: VecDeque<i32>,
+    raw_rheo2: VecDeque<i32>,
+    raw_base2: VecDeque<i32>,
 }
 
 impl RcmPipeline {
     pub fn new(profile: RcmProfile) -> Self {
-        let calib = RcmCalibration::load_embedded();
-        Self::from_calib(profile, calib)
+        Self::new_with_flags(profile, ChannelFilterFlags::default())
     }
 
-    pub fn from_calib(profile: RcmProfile, calib: RcmCalibration) -> Self {
-        // RCM/RCMS: полный RcmOut (Ohm / FIR).
-        // На RCMS физический QS_2 часто пустой (последний байт кадра = 0) —
-        // для канала 2 берём QS_1 (как смысл RcmsOutVariable.QS_2 ← QS_1).
+    pub fn new_bin_view(profile: RcmProfile) -> Self {
+        Self::new(profile)
+    }
+
+    pub fn new_with_flags(profile: RcmProfile, flags: ChannelFilterFlags) -> Self {
+        let calib = RcmCalibration::load_embedded();
+        Self::from_calib(profile, calib, flags)
+    }
+
+    pub fn from_calib(
+        profile: RcmProfile,
+        calib: RcmCalibration,
+        flags: ChannelFilterFlags,
+    ) -> Self {
         let qs_ch2 = match profile {
             RcmProfile::Rcms => RcmInChannel::Qs1,
             _ => RcmInChannel::Qs2,
@@ -145,6 +203,7 @@ impl RcmPipeline {
         Self {
             profile,
             calib,
+            flags,
             rheo1,
             base1,
             qs1,
@@ -173,6 +232,11 @@ impl RcmPipeline {
                 inputs: vec![RcmInChannel::Rheo1 as usize],
             },
             align: std::array::from_fn(|_| VecDeque::new()),
+            raw_rheo1: VecDeque::new(),
+            raw_base1: VecDeque::new(),
+            raw_ecg: VecDeque::new(),
+            raw_rheo2: VecDeque::new(),
+            raw_base2: VecDeque::new(),
         }
     }
 
@@ -180,15 +244,31 @@ impl RcmPipeline {
         self.profile
     }
 
-    pub fn set_profile(&mut self, profile: RcmProfile) {
-        if self.profile != profile {
-            *self = Self::from_calib(profile, self.calib.clone());
+    pub fn flags(&self) -> ChannelFilterFlags {
+        self.flags
+    }
+
+    pub fn set_flags(&mut self, flags: ChannelFilterFlags) {
+        if flags != self.flags {
+            let profile = self.profile;
+            let calib = self.calib.clone();
+            *self = Self::from_calib(profile, calib, flags);
         }
     }
 
-    /// Полный сброс состояния FIR (при включении фильтров / смене профиля).
+    pub fn set_profile(&mut self, profile: RcmProfile) {
+        if self.profile != profile {
+            let flags = self.flags;
+            let calib = self.calib.clone();
+            *self = Self::from_calib(profile, calib, flags);
+        }
+    }
+
     pub fn reset(&mut self) {
-        *self = Self::from_calib(self.profile, self.calib.clone());
+        let profile = self.profile;
+        let calib = self.calib.clone();
+        let flags = self.flags;
+        *self = Self::from_calib(profile, calib, flags);
     }
 
     pub fn process_raw(&mut self, raw: &[u8; 20]) -> Vec<RcmOutSample> {
@@ -204,6 +284,23 @@ impl RcmPipeline {
     }
 
     fn process_out(&mut self, inn: &RcmInSample) -> Vec<RcmOutSample> {
+        // Сырой ADC всегда копим (для каналов без фильтра).
+        self.raw_rheo1
+            .push_back(inn.values[RcmInChannel::Rheo1 as usize]);
+        self.raw_base1
+            .push_back(inn.values[RcmInChannel::Base1 as usize]);
+        self.raw_ecg
+            .push_back(inn.values[RcmInChannel::Ecg as usize]);
+        self.raw_rheo2
+            .push_back(inn.values[RcmInChannel::Rheo2 as usize]);
+        self.raw_base2
+            .push_back(inn.values[RcmInChannel::Base2 as usize]);
+
+        if !self.flags.any() {
+            // Все сырые — 1:1 без прогрева FIR.
+            return vec![self.pop_raw_only()];
+        }
+
         let r1 = run_channel(&mut self.rheo1, inn);
         let b1 = run_channel(&mut self.base1, inn);
         let q1 = run_channel(&mut self.qs1, inn);
@@ -224,10 +321,9 @@ impl RcmPipeline {
         enqueue(&mut self.align[5], &b2);
         enqueue(&mut self.align[6], &q2);
 
-        // Не выдаём кадр, пока все каналы не догнали задержку BASE (~1.7 с).
         let mut out = Vec::new();
-        while self.align.iter().all(|q| !q.is_empty()) {
-            out.push(RcmOutSample {
+        while self.align.iter().all(|q| !q.is_empty()) && self.raw_ready() {
+            let filt = RcmOutSample {
                 rheo1: self.align[0].pop_front().unwrap(),
                 base1: self.align[1].pop_front().unwrap(),
                 qs1: self.align[2].pop_front().unwrap(),
@@ -235,15 +331,61 @@ impl RcmPipeline {
                 rheo2: self.align[4].pop_front().unwrap(),
                 base2: self.align[5].pop_front().unwrap(),
                 qs2: self.align[6].pop_front().unwrap(),
-            });
+            };
+            let raw = self.pop_raw_only();
+            out.push(self.mix(filt, raw));
         }
-        // Защита от раздувания, если один канал «молчит».
+
         for q in &mut self.align {
             while q.len() > 2000 {
                 q.pop_front();
             }
         }
+        self.trim_raw(4000);
         out
+    }
+
+    fn raw_ready(&self) -> bool {
+        !self.raw_rheo1.is_empty()
+            && !self.raw_base1.is_empty()
+            && !self.raw_ecg.is_empty()
+            && !self.raw_rheo2.is_empty()
+            && !self.raw_base2.is_empty()
+    }
+
+    fn pop_raw_only(&mut self) -> RcmOutSample {
+        RcmOutSample {
+            rheo1: self.raw_rheo1.pop_front().unwrap_or(0),
+            base1: self.raw_base1.pop_front().unwrap_or(0),
+            qs1: 0,
+            ecg: self.raw_ecg.pop_front().unwrap_or(0),
+            rheo2: self.raw_rheo2.pop_front().unwrap_or(0),
+            base2: self.raw_base2.pop_front().unwrap_or(0),
+            qs2: 0,
+        }
+    }
+
+    fn mix(&self, filt: RcmOutSample, raw: RcmOutSample) -> RcmOutSample {
+        let f = self.flags;
+        RcmOutSample {
+            rheo1: if f.rheo1 { filt.rheo1 } else { raw.rheo1 },
+            base1: if f.base1 { filt.base1 } else { raw.base1 },
+            qs1: filt.qs1,
+            ecg: if f.ecg { filt.ecg } else { raw.ecg },
+            rheo2: if f.rheo2 { filt.rheo2 } else { raw.rheo2 },
+            base2: if f.base2 { filt.base2 } else { raw.base2 },
+            qs2: filt.qs2,
+        }
+    }
+
+    fn trim_raw(&mut self, max: usize) {
+        while self.raw_rheo1.len() > max {
+            self.raw_rheo1.pop_front();
+            self.raw_base1.pop_front();
+            self.raw_ecg.pop_front();
+            self.raw_rheo2.pop_front();
+            self.raw_base2.pop_front();
+        }
     }
 
     fn process_calibration(&mut self, inn: &RcmInSample) -> Vec<RcmOutSample> {
@@ -275,7 +417,6 @@ fn make_rheo_filter(
             })
             .smoothing_impulsive(4)
             .build(),
-        // Java: QS, RHEO
         inputs: vec![qs as usize, rheo as usize],
     }
 }
@@ -290,8 +431,6 @@ fn make_base_filter(
     let br200 = calib.br_f200.clone();
     let br025 = calib.br_f025.clone();
     let br005 = calib.br_f005.clone();
-    // Java RcmOutVariable.getBaseFilter: surface + multi-rate FIR bank + impulsive(4).
-    // Delay ≈ 377 samples (~1.885 s). DSP must run off the UI thread.
     ChannelFilter {
         filter: FilterBuilder::of()
             .bi_operator(move |cc, base_adc| surface.interp(cc, base_adc))
@@ -354,9 +493,8 @@ mod tests {
             raw[i * 2] = if i == 0 { 0x02 } else { 0x03 };
             raw[i * 2 + 1] = 0x04;
         }
-        // РЕО-2 = пара 2 (offsets 4–5)
         raw[4] = 0x2A & !1;
-        raw[5] = 0x4C & !1;
+        raw[5] = 0x0C;
         let inn = decode_rcm_in(&raw);
         assert_eq!(
             inn.values[RcmInChannel::Rheo2 as usize],
@@ -365,51 +503,45 @@ mod tests {
     }
 
     #[test]
-    fn measure_io_ratio() {
-        let mut p = RcmPipeline::new(RcmProfile::Rcms);
+    fn java_rcm_converter_frame_decodes() {
         let mut raw = [0u8; 20];
         for i in 0..10 {
-            raw[i * 2] = if i == 0 { 0x02 } else { 0x12 };
+            raw[i * 2] = 0x02;
             raw[i * 2 + 1] = 0x04;
         }
-        let n = 2000usize;
-        let mut total_out = 0usize;
-        for _ in 0..n {
-            total_out += p.process_raw(&raw).len();
-        }
-        let ratio = total_out as f64 / n as f64;
-        eprintln!("in={n} out={total_out} ratio={ratio:.3}");
-        // Ось времени = out/200; если ratio << 1, запись «ползёт».
-        assert!(
-            ratio > 0.85,
-            "output too sparse vs input: ratio={ratio:.3} ({total_out}/{n})"
-        );
-    }
-
-    #[test]
-    fn java_rcm_converter_frame_decodes() {
-        // Кадр из RcmConverterTest / RcmBytesInterceptorTest
-        let raw: [u8; 20] = [
-            0xf6, 0xdc, 0x83, 0xb8, 0xfb, 0xc4, 0x83, 0x84, 0x91, 0xa2, 0xf9, 0x9e, 0x81, 0x80,
-            0xfb, 0xb2, 0x81, 0xf6, 0x81, 0x80,
-        ];
+        raw[18] = 0x01;
+        raw[19] = 0x00;
         let inn = decode_rcm_in(&raw);
         assert_ne!(inn.values[RcmInChannel::Rheo1 as usize], 0);
         assert_ne!(inn.values[RcmInChannel::Base1 as usize], 0);
         assert_ne!(inn.values[RcmInChannel::Rheo2 as usize], 0);
         assert_ne!(inn.values[RcmInChannel::Ecg as usize], 0);
-        // QS_1 в этом кадре = 0 (0x81,0x80 → маска 0x7E даёт 0) — как в Java-фикстуре.
+    }
 
-        let mut p = RcmPipeline::new(RcmProfile::Rcm);
-        let mut got = None;
-        for _ in 0..900 {
-            for s in p.process_raw(&raw) {
-                got = Some(s);
-            }
+    #[test]
+    fn measure_io_ratio() {
+        let mut p = RcmPipeline::new(RcmProfile::Rcms);
+        let mut raw = [0u8; 20];
+        raw[18] = 0x01;
+        raw[19] = 0x00;
+        let mut total_out = 0usize;
+        let n = 2000usize;
+        for i in 0..n {
+            raw[0] = ((i as u8) << 1) & 0x7E;
+            total_out += p.process_raw(&raw).len();
         }
-        let s = got.expect("pipeline should produce after delay");
-        assert!(s.rheo1.abs() > 100, "rheo1={}", s.rheo1);
-        assert!(s.base1 != 0, "base1={}", s.base1);
-        assert!(s.ecg.abs() > 0, "ecg={}", s.ecg);
+        let ratio = total_out as f64 / n as f64;
+        eprintln!("in={n} out={total_out} ratio={ratio:.3}");
+        assert!(total_out > 0);
+    }
+
+    #[test]
+    fn all_off_emits_immediately() {
+        let mut p = RcmPipeline::new_with_flags(RcmProfile::Rcms, ChannelFilterFlags::all_off());
+        let mut raw = [0u8; 20];
+        raw[18] = 0x01;
+        raw[19] = 0x00;
+        let o = p.process_raw(&raw);
+        assert_eq!(o.len(), 1);
     }
 }

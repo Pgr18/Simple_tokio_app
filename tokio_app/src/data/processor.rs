@@ -1,6 +1,8 @@
 use crate::com_port::DataPacket;
 use crate::data::live_worker::LivePoint;
-use crate::data::rcm_pipeline::{RcmOutSample, RcmPipeline, RcmProfile, SAMPLE_RATE_HZ};
+use crate::data::rcm_pipeline::{
+    ChannelFilterFlags, RcmOutSample, RcmPipeline, RcmProfile, SAMPLE_RATE_HZ,
+};
 use chrono::Local;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -34,7 +36,6 @@ pub struct DataProcessor {
     session_counter: u32,
     pipeline: RcmPipeline,
     sample_index: u64,
-    filters_enabled: bool,
 }
 
 impl DataProcessor {
@@ -62,8 +63,6 @@ impl DataProcessor {
             session_counter: 1,
             pipeline: RcmPipeline::new(profile),
             sample_index: 0,
-            // По умолчанию — полный пайплайн как в Java (Ohm / FIR).
-            filters_enabled: true,
         }
     }
 
@@ -76,17 +75,16 @@ impl DataProcessor {
         self.pipeline.profile()
     }
 
-    pub fn set_filters_enabled(&mut self, enabled: bool) {
-        if enabled != self.filters_enabled {
-            self.filters_enabled = enabled;
-            self.pipeline.reset();
+    pub fn channel_filters(&self) -> ChannelFilterFlags {
+        self.pipeline.flags()
+    }
+
+    pub fn set_channel_filters(&mut self, flags: ChannelFilterFlags) {
+        if flags != self.pipeline.flags() {
+            self.pipeline.set_flags(flags);
             self.clear_channels();
             self.sample_index = 0;
         }
-    }
-
-    pub fn filters_enabled(&self) -> bool {
-        self.filters_enabled
     }
 
     pub fn set_max_points(&mut self, max_points: usize) {
@@ -142,35 +140,10 @@ impl DataProcessor {
             self.session_start_time = Some(timestamp);
         }
 
-        let time_seconds = self.sample_index as f64 / SAMPLE_RATE_HZ;
-        self.sample_index += 1;
-
-        if self.filters_enabled {
-            for sample in self.pipeline.process_raw(raw) {
-                self.push_filtered_at(sample, timestamp, time_seconds);
-            }
-        } else {
-            let frame = crate::com_port::decode::decode_frame(raw);
-            let max_points = self.max_points;
-            Self::push_point(&mut self.rheo1, time_seconds, frame.rheo1 as f64, max_points);
-            Self::push_point(&mut self.base1, time_seconds, frame.base1 as f64, max_points);
-            Self::push_point(&mut self.ecg, time_seconds, frame.ecg as f64, max_points);
-            Self::push_point(&mut self.base2, time_seconds, frame.base2 as f64, max_points);
-            Self::push_point(&mut self.rheo2, time_seconds, frame.rheo2 as f64, max_points);
-
-            if self.auto_recording {
-                self.recorded_data.push(RecordedPacket {
-                    timestamp,
-                    time_seconds,
-                    rheo1: frame.rheo1 as f64,
-                    base1: frame.base1 as f64,
-                    ecg: frame.ecg as f64,
-                    base2: frame.base2 as f64,
-                    rheo2: frame.rheo2 as f64,
-                    qs1: 0.0,
-                    qs2: 0.0,
-                });
-            }
+        for sample in self.pipeline.process_raw(raw) {
+            let time_seconds = self.sample_index as f64 / SAMPLE_RATE_HZ;
+            self.sample_index += 1;
+            self.push_filtered_at(sample, timestamp, time_seconds);
         }
     }
 

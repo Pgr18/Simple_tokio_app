@@ -4,7 +4,9 @@
 use crate::com_port::decode::decode_frame;
 use crate::com_port::serial::SerialConfig;
 use crate::com_port::sync::FrameSynchronizer;
-use crate::data::rcm_pipeline::{RcmOutSample, RcmPipeline, RcmProfile, SAMPLE_RATE_HZ};
+use crate::data::rcm_pipeline::{
+    ChannelFilterFlags, RcmOutSample, RcmPipeline, RcmProfile, SAMPLE_RATE_HZ,
+};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -28,7 +30,7 @@ pub enum LiveEvent {
 
 enum LiveCmd {
     Stop,
-    SetFilters(bool),
+    SetChannelFilters(ChannelFilterFlags),
     SetProfile(RcmProfile),
 }
 
@@ -43,7 +45,7 @@ impl LiveWorker {
         port_name: String,
         baud_rate: u32,
         profile: RcmProfile,
-        filters_enabled: bool,
+        flags: ChannelFilterFlags,
     ) -> Result<Self, String> {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
@@ -51,14 +53,7 @@ impl LiveWorker {
         let join = thread::Builder::new()
             .name("rcm-live".into())
             .spawn(move || {
-                worker_loop(
-                    port_name,
-                    baud_rate,
-                    profile,
-                    filters_enabled,
-                    cmd_rx,
-                    event_tx,
-                );
+                worker_loop(port_name, baud_rate, profile, flags, cmd_rx, event_tx);
             })
             .map_err(|e| format!("не запустить live-поток: {e}"))?;
 
@@ -76,8 +71,8 @@ impl LiveWorker {
         }
     }
 
-    pub fn set_filters(&self, enabled: bool) {
-        let _ = self.cmd_tx.send(LiveCmd::SetFilters(enabled));
+    pub fn set_channel_filters(&self, flags: ChannelFilterFlags) {
+        let _ = self.cmd_tx.send(LiveCmd::SetChannelFilters(flags));
     }
 
     pub fn set_profile(&self, profile: RcmProfile) {
@@ -113,7 +108,7 @@ fn worker_loop(
     port_name: String,
     baud_rate: u32,
     profile: RcmProfile,
-    mut filters_enabled: bool,
+    flags: ChannelFilterFlags,
     cmd_rx: Receiver<LiveCmd>,
     event_tx: Sender<LiveEvent>,
 ) {
@@ -126,7 +121,6 @@ fn worker_loop(
         }
     };
 
-    // Сброс мусора после open.
     let mut trash = [0u8; 512];
     for _ in 0..8 {
         match port.read(&mut trash) {
@@ -140,7 +134,7 @@ fn worker_loop(
     } else {
         FrameSynchronizer::new()
     };
-    let mut pipeline = RcmPipeline::new(profile);
+    let mut pipeline = RcmPipeline::new_with_flags(profile, flags);
     let mut sample_index: u64 = 0;
     let mut batch = Vec::with_capacity(64);
     let mut last_flush = Instant::now();
@@ -153,11 +147,9 @@ fn worker_loop(
                     flush_batch(&event_tx, &mut batch);
                     return;
                 }
-                LiveCmd::SetFilters(v) => {
-                    filters_enabled = v;
-                    if v {
-                        pipeline.reset();
-                    }
+                LiveCmd::SetChannelFilters(f) => {
+                    pipeline.set_flags(f);
+                    sample_index = 0;
                 }
                 LiveCmd::SetProfile(p) => {
                     pipeline.set_profile(p);
@@ -172,14 +164,10 @@ fn worker_loop(
             Ok(n) if n > 0 => {
                 let frames = sync.push_bytes(&buf[..n]);
                 for raw in frames {
-                    let t = sample_index as f64 / SAMPLE_RATE_HZ;
-                    sample_index += 1;
-                    if filters_enabled {
-                        for s in pipeline.process_raw(&raw) {
-                            batch.push(to_point(t, &s));
-                        }
-                    } else {
-                        batch.push(raw_point(t, &raw));
+                    for s in pipeline.process_raw(&raw) {
+                        let t = sample_index as f64 / SAMPLE_RATE_HZ;
+                        sample_index += 1;
+                        batch.push(to_point(t, &s));
                     }
                 }
             }
@@ -191,13 +179,11 @@ fn worker_loop(
             }
         }
 
-        // Пачками в UI ~ каждые 20–40 мс, не каждый сэмпл.
         if !batch.is_empty() && last_flush.elapsed() >= Duration::from_millis(25) {
             flush_batch(&event_tx, &mut batch);
             last_flush = Instant::now();
         }
 
-        // Не крутить CPU вхолостую, если данных нет.
         if batch.is_empty() {
             thread::sleep(Duration::from_millis(1));
         }
@@ -214,7 +200,7 @@ fn flush_batch(tx: &Sender<LiveEvent>, batch: &mut Vec<LivePoint>) {
 }
 
 fn to_point(time_seconds: f64, s: &RcmOutSample) -> LivePoint {
-    // Java Option.INVERSE на РЕО.
+    // РЕО: INVERSE для Ohm и для сырого signed → как decode_frame bipolar.
     LivePoint {
         time_seconds,
         rheo1: -(s.rheo1 as f64),
@@ -227,6 +213,7 @@ fn to_point(time_seconds: f64, s: &RcmOutSample) -> LivePoint {
     }
 }
 
+#[allow(dead_code)]
 fn raw_point(time_seconds: f64, raw: &[u8; 20]) -> LivePoint {
     let f = decode_frame(raw);
     LivePoint {

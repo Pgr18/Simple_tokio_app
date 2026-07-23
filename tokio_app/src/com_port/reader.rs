@@ -4,12 +4,14 @@ use super::model::Frame;
 use super::serial::SerialConfig;
 use super::sync::FrameSynchronizer;
 use serialport::SerialPort;
+use std::collections::VecDeque;
 
 pub struct ComPortReader {
     port: Option<Box<dyn SerialPort>>,
     config: SerialConfig,
     sync: FrameSynchronizer,
-    pending: Vec<[u8; 20]>,
+    /// FIFO сырых кадров — порядок отображения = порядку приёма.
+    pending: VecDeque<[u8; 20]>,
 }
 
 impl ComPortReader {
@@ -18,7 +20,7 @@ impl ComPortReader {
             port: None,
             config: SerialConfig::default(),
             sync: FrameSynchronizer::new(),
-            pending: Vec::new(),
+            pending: VecDeque::new(),
         }
     }
 
@@ -27,7 +29,7 @@ impl ComPortReader {
             port: None,
             config,
             sync: FrameSynchronizer::new(),
-            pending: Vec::new(),
+            pending: VecDeque::new(),
         }
     }
 
@@ -35,17 +37,37 @@ impl ComPortReader {
         super::discover::list_port_names()
     }
 
+    pub fn config(&self) -> &SerialConfig {
+        &self.config
+    }
+
+    pub fn set_config(&mut self, config: SerialConfig) {
+        self.config = config;
+    }
+
     pub fn connect(&mut self, port_name: &str, baud_rate: u32) -> Result<(), Box<dyn std::error::Error>> {
         let mut cfg = self.config.clone();
         cfg.baud_rate = baud_rate;
-        let mut port = cfg.open(port_name)?;
-        // Сброс мусора после RTS/DTR.
+        self.connect_with_config(port_name, cfg)
+    }
+
+    pub fn connect_with_config(
+        &mut self,
+        port_name: &str,
+        config: SerialConfig,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut port = config.open(port_name)?;
+        // Сброс мусора после открытия.
         let mut trash = [0u8; 512];
-        for _ in 0..5 {
-            let _ = port.read(&mut trash);
+        for _ in 0..8 {
+            match port.read(&mut trash) {
+                Ok(0) => break,
+                Ok(_) => continue,
+                Err(_) => break,
+            }
         }
         self.port = Some(port);
-        self.config = cfg;
+        self.config = config;
         self.clear_buffer();
         Ok(())
     }
@@ -65,46 +87,59 @@ impl ComPortReader {
     }
 
     pub fn buffer_size(&self) -> usize {
-        self.sync.buffer_len()
+        self.sync.buffer_len() + self.pending.len() * 20
+    }
+
+    pub fn pending_frames(&self) -> usize {
+        self.pending.len()
     }
 
     pub fn resync_count(&self) -> u64 {
         self.sync.resync_count
     }
 
-    /// Читает сырой 20-байтный кадр (для фильтрации / калибровки).
-    pub fn read_raw_frame(&mut self) -> Option<[u8; 20]> {
-        if let Some(frame) = self.pending.pop() {
-            return Some(frame);
-        }
+    /// Дочитывает байты с порта в синхронизатор (без выдачи кадра).
+    pub fn poll_input(&mut self) {
         if self.port.is_none() {
-            return None;
+            return;
         }
-
-        let mut temp = [0u8; 256];
-        let read_result = self.port.as_mut()?.read(&mut temp);
-
-        match read_result {
-            Ok(n) if n > 0 => {
-                let frames = self.sync.push_bytes(&temp[..n]);
-                if frames.is_empty() {
-                    return None;
+        let mut temp = [0u8; 1024];
+        // Несколько чтений за тик, чтобы не копить джиттер на 38400.
+        for _ in 0..4 {
+            let read_result = match self.port.as_mut() {
+                Some(p) => p.read(&mut temp),
+                None => return,
+            };
+            match read_result {
+                Ok(n) if n > 0 => {
+                    let frames = self.sync.push_bytes(&temp[..n]);
+                    self.pending.extend(frames);
+                    // Большой запас: лучше догнать, чем терять секунды записи.
+                    while self.pending.len() > 20_000 {
+                        self.pending.pop_front();
+                    }
                 }
-                let mut iter = frames.into_iter();
-                let first = iter.next()?;
-                self.pending.extend(iter.rev());
-                Some(first)
-            }
-            Ok(_) => None,
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => None,
-            Err(_) => {
-                self.disconnect();
-                None
+                Ok(_) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
+                Err(_) => {
+                    self.disconnect();
+                    return;
+                }
             }
         }
     }
 
-    /// Декодированный кадр (без выходных фильтров РКМ).
+    /// Берёт следующий кадр из FIFO (после `poll_input`).
+    pub fn next_raw_frame(&mut self) -> Option<[u8; 20]> {
+        self.pending.pop_front()
+    }
+
+    /// Читает сырой 20-байтный кадр.
+    pub fn read_raw_frame(&mut self) -> Option<[u8; 20]> {
+        self.poll_input();
+        self.next_raw_frame()
+    }
+
     pub fn read_data(&mut self) -> Option<Frame> {
         self.read_raw_frame().map(|raw| decode_frame(&raw))
     }
@@ -114,14 +149,11 @@ impl ComPortReader {
             self.disconnect();
         }
 
-        let mut cfg = self.config.clone();
-        cfg.baud_rate = baud_rate;
-
-        let found = find_rcm_port(&cfg).ok_or_else(|| {
+        let found = find_rcm_port(baud_rate).ok_or_else(|| {
             "Прибор РКМ/РКМ-С не найден ни на одном COM-порту".to_string()
         })?;
 
-        self.connect(&found.port_name, baud_rate)
+        self.connect_with_config(&found.port_name, found.config)
             .map_err(|e| e.to_string())?;
         Ok(found.port_name)
     }
@@ -133,11 +165,14 @@ impl Default for ComPortReader {
     }
 }
 
-/// Прогоняет сырой дамп через синхронизатор + декодер (офлайн, без async).
+/// Прогоняет сырой дамп через синхронизатор + декодер (офлайн).
 pub fn decode_dump(bytes: &[u8]) -> DumpStats {
     use super::decode::decode_frame as dec;
     let mut sync = FrameSynchronizer::new();
-    let frames_raw = sync.push_bytes(bytes);
+    let mut frames_raw = sync.push_bytes(bytes);
+    if let Some(last) = sync.flush() {
+        frames_raw.push(last);
+    }
 
     let mut stats = DumpStats {
         frames: frames_raw.len(),

@@ -1,5 +1,7 @@
 use eframe::egui;
-use crate::com_port::{find_rcm_port_among, ComPortReader, SerialConfig};
+use crate::com_port::{find_rcm_port_among, list_port_names, ProbeResult};
+use crate::data::bin_playback::{guess_profile_from_path, load_bin_file, BinLoadResult};
+use crate::data::live_worker::{LiveEvent, LiveWorker};
 use crate::data::processor::DataProcessor;
 use crate::data::RcmProfile;
 use super::plots::PlotManager;
@@ -8,13 +10,17 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 enum DiscoverMsg {
-    Done(Result<String, String>),
+    Done(Result<ProbeResult, String>),
+}
+
+enum BinMsg {
+    Done(Result<BinLoadResult, String>),
 }
 
 pub struct MainWindow {
-    com_reader: ComPortReader,
     data_processor: DataProcessor,
     plot_manager: PlotManager,
+    live: Option<LiveWorker>,
     selected_port: String,
     baud_rate: u32,
     is_connected: bool,
@@ -24,6 +30,9 @@ pub struct MainWindow {
     discovering: bool,
     discover_rx: Option<Receiver<DiscoverMsg>>,
     auto_find_on_start: bool,
+    loading_bin: bool,
+    bin_rx: Option<Receiver<BinMsg>>,
+    bin_status: String,
 }
 
 impl Default for MainWindow {
@@ -34,16 +43,27 @@ impl Default for MainWindow {
 
 impl MainWindow {
     pub fn new() -> Self {
-        let com_reader = ComPortReader::new();
-        let available_ports = ComPortReader::available_ports();
+        let available_ports = list_port_names();
         let save_directory = Self::get_default_save_directory();
         let display_buffer_size = 14_000;
+        let selected_port = available_ports
+            .iter()
+            .find(|p| p.eq_ignore_ascii_case("COM3"))
+            .cloned()
+            .or_else(|| {
+                if available_ports.len() == 1 {
+                    available_ports.first().cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
 
         Self {
-            com_reader,
             data_processor: DataProcessor::new(display_buffer_size),
             plot_manager: PlotManager::new(),
-            selected_port: String::new(),
+            live: None,
+            selected_port,
             baud_rate: 38400,
             is_connected: false,
             available_ports,
@@ -52,6 +72,9 @@ impl MainWindow {
             discovering: false,
             discover_rx: None,
             auto_find_on_start: true,
+            loading_bin: false,
+            bin_rx: None,
+            bin_status: String::new(),
         }
     }
 
@@ -107,35 +130,64 @@ impl MainWindow {
     }
 
     fn update_ports_list(&mut self) {
-        self.available_ports = ComPortReader::available_ports();
+        self.available_ports = list_port_names();
+    }
+
+    fn stop_live(&mut self) {
+        if let Some(live) = self.live.take() {
+            live.stop();
+        }
+        self.is_connected = false;
+    }
+
+    fn start_live(&mut self, port: &str) -> Result<(), String> {
+        self.stop_live();
+        self.data_processor.clear();
+        self.plot_manager.enter_live_view();
+        self.plot_manager.reset_y_bounds();
+        let worker = LiveWorker::start(
+            port.to_string(),
+            self.baud_rate,
+            self.data_processor.profile(),
+            self.data_processor.filters_enabled(),
+        )?;
+        self.live = Some(worker);
+        self.is_connected = true;
+        self.selected_port = port.to_string();
+        Ok(())
     }
 
     fn connect_disconnect(&mut self) {
         if self.is_connected {
-            self.com_reader.disconnect();
-            self.is_connected = false;
+            self.stop_live();
             self.port_status = "Отключено".into();
-        } else if !self.selected_port.is_empty() {
-            if let Err(e) = self.com_reader.connect(&self.selected_port, self.baud_rate) {
-                self.port_status = format!("Ошибка подключения: {e}");
-                eprintln!("Failed to connect: {e}");
-            } else {
-                self.is_connected = true;
-                self.port_status = format!("Подключено: {}", self.selected_port);
-            }
-        } else {
-            self.start_auto_discover();
+            return;
         }
+
+        self.update_ports_list();
+
+        if !self.selected_port.is_empty() {
+            let port = self.selected_port.clone();
+            match self.start_live(&port) {
+                Ok(()) => self.port_status = format!("Подключено: {port} [7N1]"),
+                Err(e) => {
+                    self.port_status = format!("Ошибка подключения {port}: {e}");
+                    eprintln!("Failed to connect: {e}");
+                }
+            }
+            return;
+        }
+
+        self.start_auto_discover();
     }
 
-    /// Запускает поиск прибора в фоне: слушает каждый COM ~400 мс и ищет валидные кадры РКМ.
+    /// Запускает поиск прибора в фоне (только 7N1).
     fn start_auto_discover(&mut self) {
         if self.discovering {
             return;
         }
         if self.is_connected {
-            self.com_reader.disconnect();
-            self.is_connected = false;
+            self.stop_live();
         }
 
         self.update_ports_list();
@@ -145,16 +197,28 @@ impl MainWindow {
             return;
         }
 
-        let mut cfg = SerialConfig::default();
-        cfg.baud_rate = self.baud_rate;
+        if ports.len() == 1 || !self.selected_port.is_empty() {
+            let port = if !self.selected_port.is_empty() {
+                self.selected_port.clone()
+            } else {
+                ports[0].clone()
+            };
+            match self.start_live(&port) {
+                Ok(()) => self.port_status = format!("Подключено: {port} [7N1]"),
+                Err(e) => self.port_status = format!("Не открыть {port}: {e}"),
+            }
+            return;
+        }
+
+        let baud = self.baud_rate;
         let (tx, rx) = mpsc::channel();
         self.discover_rx = Some(rx);
         self.discovering = true;
-        self.port_status = format!("Поиск прибора на {} портах…", ports.len());
+        self.port_status = format!("Поиск прибора на {} портах [7N1]…", ports.len());
 
         std::thread::spawn(move || {
-            let result = match find_rcm_port_among(ports, &cfg) {
-                Some(probe) => Ok(probe.port_name),
+            let result = match find_rcm_port_among(ports, baud) {
+                Some(probe) => Ok(probe),
                 None => Err("Прибор РКМ/РКМ-С не найден".into()),
             };
             let _ = tx.send(DiscoverMsg::Done(result));
@@ -166,18 +230,19 @@ impl MainWindow {
             return;
         };
         match rx.try_recv() {
-            Ok(DiscoverMsg::Done(Ok(port))) => {
+            Ok(DiscoverMsg::Done(Ok(probe))) => {
                 self.discovering = false;
                 self.discover_rx = None;
-                self.selected_port = port.clone();
-                self.update_ports_list();
-                match self.com_reader.connect(&port, self.baud_rate) {
+                let port = probe.port_name.clone();
+                let label = probe.config.label();
+                let frames = probe.frames;
+                match self.start_live(&port) {
                     Ok(()) => {
-                        self.is_connected = true;
-                        self.port_status = format!("Найден и подключен: {port}");
+                        self.port_status = format!(
+                            "Найден и подключен: {port} [{label}] ({frames} кадров при пробе)"
+                        );
                     }
                     Err(e) => {
-                        self.is_connected = false;
                         self.port_status = format!("Найден {port}, но не удалось открыть: {e}");
                     }
                 }
@@ -185,7 +250,21 @@ impl MainWindow {
             Ok(DiscoverMsg::Done(Err(msg))) => {
                 self.discovering = false;
                 self.discover_rx = None;
-                self.port_status = msg;
+                if self.available_ports.len() == 1 {
+                    let port = self.available_ports[0].clone();
+                    match self.start_live(&port) {
+                        Ok(()) => {
+                            self.port_status = format!(
+                                "Автопоиск не уверен, открыт единственный порт: {port} [7N1]"
+                            );
+                        }
+                        Err(e) => {
+                            self.port_status = format!("{msg}; также не открыть {port}: {e}");
+                        }
+                    }
+                } else {
+                    self.port_status = msg;
+                }
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
@@ -194,6 +273,125 @@ impl MainWindow {
                 self.port_status = "Поиск прерван".into();
             }
         }
+    }
+
+    fn poll_live(&mut self) {
+        let Some(live) = self.live.as_ref() else {
+            return;
+        };
+        let events = live.poll();
+        let mut fatal = None;
+        for ev in events {
+            match ev {
+                LiveEvent::Batch(points) => {
+                    for p in &points {
+                        self.data_processor.push_live_point(p);
+                    }
+                }
+                LiveEvent::Error(msg) => {
+                    fatal = Some(msg);
+                }
+            }
+        }
+        if let Some(msg) = fatal {
+            self.stop_live();
+            self.port_status = msg;
+        }
+    }
+
+    fn open_bin_dialog(&mut self) {
+        if self.loading_bin {
+            return;
+        }
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures");
+        let dialog = rfd::FileDialog::new()
+            .set_title("Открыть сырой дамп РКМ/РКМ-С (.bin)")
+            .add_filter("RCM binary", &["bin"])
+            .add_filter("All", &["*"]);
+        let dialog = if fixtures.is_dir() {
+            dialog.set_directory(&fixtures)
+        } else {
+            dialog
+        };
+        let Some(path) = dialog.pick_file() else {
+            return;
+        };
+
+        // Остановить live COM — смотрим файл.
+        self.stop_live();
+
+        let guessed = guess_profile_from_path(&path);
+        if guessed != self.data_processor.profile() {
+            self.data_processor.set_profile(guessed);
+        }
+        let profile = self.data_processor.profile();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+
+        let (tx, rx) = mpsc::channel();
+        self.bin_rx = Some(rx);
+        self.loading_bin = true;
+        self.bin_status = format!("Загрузка {name}…");
+        self.port_status = self.bin_status.clone();
+
+        std::thread::spawn(move || {
+            let result = load_bin_file(&path, profile);
+            let _ = tx.send(BinMsg::Done(result));
+        });
+    }
+
+    fn poll_bin_load(&mut self) {
+        let Some(rx) = self.bin_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(BinMsg::Done(Ok(result))) => {
+                self.loading_bin = false;
+                self.bin_rx = None;
+                self.apply_bin_result(result);
+            }
+            Ok(BinMsg::Done(Err(e))) => {
+                self.loading_bin = false;
+                self.bin_rx = None;
+                self.bin_status = format!("Ошибка .bin: {e}");
+                self.port_status = self.bin_status.clone();
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.loading_bin = false;
+                self.bin_rx = None;
+                self.bin_status = "Загрузка .bin прервана".into();
+                self.port_status = self.bin_status.clone();
+            }
+        }
+    }
+
+    fn apply_bin_result(&mut self, result: BinLoadResult) {
+        let stats = &result.stats;
+        // Храним весь дамп на графике (с потолком по памяти).
+        let need = result.points.len().saturating_add(1000).min(500_000).max(14_000);
+        self.data_processor.set_max_points(need);
+        self.data_processor.clear();
+
+        for p in &result.points {
+            self.data_processor.push_live_point(p);
+        }
+
+        self.plot_manager
+            .enter_offline_view(self.data_processor.get_max_time());
+
+        let name = stats
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| stats.path.display().to_string());
+        self.bin_status = format!(
+            "{name}: {} байт → {} кадров, resync={}, {:.1} с (сырой decode, без фильтров)",
+            stats.bytes, stats.frames, stats.resyncs, stats.duration_s
+        );
+        self.port_status = self.bin_status.clone();
     }
 
     fn save_recorded_data(&mut self) {
@@ -308,22 +506,14 @@ impl eframe::App for MainWindow {
         }
 
         self.poll_discover();
-        if self.discovering {
-            ctx.request_repaint();
+        self.poll_live();
+        self.poll_bin_load();
+        if self.discovering || self.is_connected || self.loading_bin {
+            // Java Timeline ~50 ms (~20 FPS); при загрузке bin тоже крутим UI.
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
 
         self.handle_hotkeys(ctx);
-
-        if self.is_connected {
-            // Не более ~100 мс данных за кадр UI (200 Гц → 20 сэмплов), иначе UI «зависает».
-            const MAX_FRAMES_PER_TICK: usize = 40;
-            for _ in 0..MAX_FRAMES_PER_TICK {
-                let Some(raw) = self.com_reader.read_raw_frame() else {
-                    break;
-                };
-                self.data_processor.add_raw_frame(&raw);
-            }
-        }
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -355,7 +545,7 @@ impl eframe::App for MainWindow {
                                 .clamp_range(1200..=115200),
                         );
 
-                        let find_enabled = !self.discovering && !self.is_connected;
+                        let find_enabled = !self.discovering && !self.is_connected && !self.loading_bin;
                         if ui
                             .add_enabled(find_enabled, egui::Button::new("🔍 Автопоиск"))
                             .on_hover_text("Сканирует COM-порты и ищет поток кадров РКМ/РКМ-С")
@@ -364,19 +554,30 @@ impl eframe::App for MainWindow {
                             self.start_auto_discover();
                         }
 
+                        if ui
+                            .add_enabled(!self.loading_bin, egui::Button::new("📂 Open .bin"))
+                            .on_hover_text("Открыть сырой дамп (как tests/fixtures/*.bin) и показать на графиках")
+                            .clicked()
+                        {
+                            self.open_bin_dialog();
+                        }
+
                         let button_text = if self.is_connected {
                             "Disconnect"
                         } else {
                             "Connect"
                         };
                         if ui
-                            .add_enabled(!self.discovering, egui::Button::new(button_text))
+                            .add_enabled(!self.discovering && !self.loading_bin, egui::Button::new(button_text))
                             .clicked()
                         {
                             self.connect_disconnect();
                         }
 
-                        if self.discovering {
+                        if self.loading_bin {
+                            ui.spinner();
+                            ui.colored_label(egui::Color32::LIGHT_BLUE, "● Loading .bin");
+                        } else if self.discovering {
                             ui.spinner();
                             ui.colored_label(egui::Color32::YELLOW, "● Searching");
                         } else if self.is_connected {
@@ -402,11 +603,22 @@ impl eframe::App for MainWindow {
                             });
                         if profile != self.data_processor.profile() {
                             self.data_processor.set_profile(profile);
+                            if let Some(live) = self.live.as_ref() {
+                                live.set_profile(profile);
+                            }
+                            self.plot_manager.reset_y_bounds();
                         }
 
                         let mut filters_on = self.data_processor.filters_enabled();
                         if ui.checkbox(&mut filters_on, "Фильтры").changed() {
                             self.data_processor.set_filters_enabled(filters_on);
+                            if let Some(live) = self.live.as_ref() {
+                                live.set_filters(filters_on);
+                            }
+                            self.plot_manager.reset_y_bounds();
+                        }
+                        if filters_on {
+                            ui.weak("(DSP offline, BASE FIR ~1.7s)");
                         }
                     });
                 });

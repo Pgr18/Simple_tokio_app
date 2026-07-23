@@ -1,5 +1,6 @@
 use crate::com_port::DataPacket;
-use crate::data::rcm_pipeline::{RcmOutSample, RcmPipeline, RcmProfile};
+use crate::data::live_worker::LivePoint;
+use crate::data::rcm_pipeline::{RcmOutSample, RcmPipeline, RcmProfile, SAMPLE_RATE_HZ};
 use chrono::Local;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -61,9 +62,8 @@ impl DataProcessor {
             session_counter: 1,
             pipeline: RcmPipeline::new(profile),
             sample_index: 0,
-            // По умолчанию — сырой decode по протоколу (5 каналов), без тяжёлой калибровки.
-            // Тяжёлые FIR/Ohm включаются чекбоксом «Фильтры».
-            filters_enabled: false,
+            // По умолчанию — полный пайплайн как в Java (Ohm / FIR).
+            filters_enabled: true,
         }
     }
 
@@ -77,54 +77,133 @@ impl DataProcessor {
     }
 
     pub fn set_filters_enabled(&mut self, enabled: bool) {
-        self.filters_enabled = enabled;
+        if enabled != self.filters_enabled {
+            self.filters_enabled = enabled;
+            self.pipeline.reset();
+            self.clear_channels();
+            self.sample_index = 0;
+        }
     }
 
     pub fn filters_enabled(&self) -> bool {
         self.filters_enabled
     }
 
+    pub fn set_max_points(&mut self, max_points: usize) {
+        self.max_points = max_points.max(1000);
+    }
+
+    pub fn max_points(&self) -> usize {
+        self.max_points
+    }
+
+    /// Точка с фонового DSP-потока (уже в физ. единицах).
+    pub fn push_live_point(&mut self, p: &LivePoint) {
+        let timestamp = now_ms();
+        if self.session_start_time.is_none() {
+            self.session_start_time = Some(timestamp);
+        }
+        if p.time_seconds >= 0.0 {
+            let idx = (p.time_seconds * SAMPLE_RATE_HZ).round() as u64 + 1;
+            if idx > self.sample_index {
+                self.sample_index = idx;
+            }
+        }
+
+        let max_points = self.max_points;
+        Self::push_point(&mut self.rheo1, p.time_seconds, p.rheo1, max_points);
+        Self::push_point(&mut self.base1, p.time_seconds, p.base1, max_points);
+        Self::push_point(&mut self.ecg, p.time_seconds, p.ecg, max_points);
+        Self::push_point(&mut self.base2, p.time_seconds, p.base2, max_points);
+        Self::push_point(&mut self.rheo2, p.time_seconds, p.rheo2, max_points);
+        Self::push_point(&mut self.qs1, p.time_seconds, p.qs1, max_points);
+        Self::push_point(&mut self.qs2, p.time_seconds, p.qs2, max_points);
+
+        if self.auto_recording {
+            self.recorded_data.push(RecordedPacket {
+                timestamp,
+                time_seconds: p.time_seconds,
+                rheo1: p.rheo1,
+                base1: p.base1,
+                ecg: p.ecg,
+                base2: p.base2,
+                rheo2: p.rheo2,
+                qs1: p.qs1,
+                qs2: p.qs2,
+            });
+        }
+    }
+
     /// Сырой 20-байтный кадр → фильтры → буферы графиков.
+    /// Ось времени = число *принятых* кадров / 200 Гц (не число выходов фильтра).
     pub fn add_raw_frame(&mut self, raw: &[u8; 20]) {
         let timestamp = now_ms();
         if self.session_start_time.is_none() {
             self.session_start_time = Some(timestamp);
         }
 
+        let time_seconds = self.sample_index as f64 / SAMPLE_RATE_HZ;
+        self.sample_index += 1;
+
         if self.filters_enabled {
             for sample in self.pipeline.process_raw(raw) {
-                self.push_filtered(sample, timestamp);
+                self.push_filtered_at(sample, timestamp, time_seconds);
             }
         } else {
             let frame = crate::com_port::decode::decode_frame(raw);
-            self.add_packet(frame);
+            let max_points = self.max_points;
+            Self::push_point(&mut self.rheo1, time_seconds, frame.rheo1 as f64, max_points);
+            Self::push_point(&mut self.base1, time_seconds, frame.base1 as f64, max_points);
+            Self::push_point(&mut self.ecg, time_seconds, frame.ecg as f64, max_points);
+            Self::push_point(&mut self.base2, time_seconds, frame.base2 as f64, max_points);
+            Self::push_point(&mut self.rheo2, time_seconds, frame.rheo2 as f64, max_points);
+
+            if self.auto_recording {
+                self.recorded_data.push(RecordedPacket {
+                    timestamp,
+                    time_seconds,
+                    rheo1: frame.rheo1 as f64,
+                    base1: frame.base1 as f64,
+                    ecg: frame.ecg as f64,
+                    base2: frame.base2 as f64,
+                    rheo2: frame.rheo2 as f64,
+                    qs1: 0.0,
+                    qs2: 0.0,
+                });
+            }
         }
     }
 
-    fn push_filtered(&mut self, sample: RcmOutSample, timestamp: u64) {
-        let time_seconds = self.sample_index as f64 / 200.0;
-        self.sample_index += 1;
+    fn push_filtered_at(&mut self, sample: RcmOutSample, timestamp: u64, time_seconds: f64) {
+        // Java `Option.INVERSE` на РЕО — инверсия для отображения.
+        let rheo1 = -(sample.rheo1 as f64);
+        let rheo2 = -(sample.rheo2 as f64);
+        let base1 = sample.base1 as f64;
+        let base2 = sample.base2 as f64;
+        let ecg = sample.ecg as f64;
+        let qs1 = sample.qs1 as f64;
+        let qs2 = sample.qs2 as f64;
 
         let max_points = self.max_points;
-        Self::push_point(&mut self.rheo1, time_seconds, sample.rheo1 as f64, max_points);
-        Self::push_point(&mut self.base1, time_seconds, sample.base1 as f64, max_points);
-        Self::push_point(&mut self.ecg, time_seconds, sample.ecg as f64, max_points);
-        Self::push_point(&mut self.base2, time_seconds, sample.base2 as f64, max_points);
-        Self::push_point(&mut self.rheo2, time_seconds, sample.rheo2 as f64, max_points);
-        Self::push_point(&mut self.qs1, time_seconds, sample.qs1 as f64, max_points);
-        Self::push_point(&mut self.qs2, time_seconds, sample.qs2 as f64, max_points);
+        Self::push_point(&mut self.rheo1, time_seconds, rheo1, max_points);
+        Self::push_point(&mut self.base1, time_seconds, base1, max_points);
+        Self::push_point(&mut self.ecg, time_seconds, ecg, max_points);
+        Self::push_point(&mut self.base2, time_seconds, base2, max_points);
+        Self::push_point(&mut self.rheo2, time_seconds, rheo2, max_points);
+        Self::push_point(&mut self.qs1, time_seconds, qs1, max_points);
+        Self::push_point(&mut self.qs2, time_seconds, qs2, max_points);
 
         if self.auto_recording {
             self.recorded_data.push(RecordedPacket {
                 timestamp,
                 time_seconds,
-                rheo1: sample.rheo1 as f64,
-                base1: sample.base1 as f64,
-                ecg: sample.ecg as f64,
-                base2: sample.base2 as f64,
-                rheo2: sample.rheo2 as f64,
-                qs1: sample.qs1 as f64,
-                qs2: sample.qs2 as f64,
+                rheo1,
+                base1,
+                ecg,
+                base2,
+                rheo2,
+                qs1,
+                qs2,
             });
         }
     }
@@ -170,19 +249,8 @@ impl DataProcessor {
     }
 
     pub fn get_max_time(&self) -> f64 {
-        [
-            self.rheo1.last(),
-            self.base1.last(),
-            self.ecg.last(),
-            self.base2.last(),
-            self.rheo2.last(),
-            self.qs1.last(),
-            self.qs2.last(),
-        ]
-        .into_iter()
-        .flatten()
-        .map(|(t, _)| *t)
-        .fold(0.0, f64::max)
+        // Всегда по счётчику принятых кадров — окно едет даже в прогреве фильтров.
+        self.sample_index as f64 / SAMPLE_RATE_HZ
     }
 
     pub fn get_rheocardiogram(&self) -> &[(f64, f64)] {

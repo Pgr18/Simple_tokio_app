@@ -1,43 +1,47 @@
-//! Конфигурация и открытие COM-порта для реографа РКМ / РКМ-С.
-//!
-//! Настройки по умолчанию взяты из документации базового РКМ.
-//! Для модификации РКМ-С отдельная конфигурация не задокументирована —
-//! используем те же значения как рабочее предположение.
+//! Конфигурация COM-порта по JavaFX `AbstractRcmBytesInterceptor`:
+//! `38400, 7 data bits, parity None, clearDTR`. RTS не трогаем.
 
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
 use std::time::Duration;
 
-/// Параметры RS-232 для РКМ / РКМ-С.
-///
-/// Предположение по умолчанию (документировано для базового РКМ;
-/// для РКМ-С отдельной спецификации нет — те же значения):
-/// `38400, 8 бит, без чётности, 1 стоп-бит, RTS=true, DTR=false`.
 #[derive(Debug, Clone)]
 pub struct SerialConfig {
     pub baud_rate: u32,
     pub data_bits: DataBits,
     pub parity: Parity,
     pub stop_bits: StopBits,
-    pub rts: bool,
-    pub dtr: bool,
+    pub clear_dtr: bool,
     pub timeout: Duration,
 }
 
 impl Default for SerialConfig {
     fn default() -> Self {
-        Self {
-            baud_rate: 38400,
-            data_bits: DataBits::Eight,
-            parity: Parity::None,
-            stop_bits: StopBits::One,
-            rts: true,
-            dtr: false,
-            timeout: Duration::from_millis(50),
-        }
+        Self::rcm_7n1(38400)
     }
 }
 
 impl SerialConfig {
+    /// JavaFX: `DATA_BITS_7` + `CLEAR_DTR`, parity по умолчанию None.
+    pub fn rcm_7n1(baud_rate: u32) -> Self {
+        Self {
+            baud_rate,
+            data_bits: DataBits::Seven,
+            parity: Parity::None,
+            stop_bits: StopBits::One,
+            clear_dtr: true,
+            timeout: Duration::from_millis(10),
+        }
+    }
+
+    /// Совместимое имя (раньше ошибочно называли 7O1).
+    pub fn rcm_7o1(baud_rate: u32) -> Self {
+        Self::rcm_7n1(baud_rate)
+    }
+
+    pub fn label(&self) -> String {
+        format!("{} 7N1", self.baud_rate)
+    }
+
     pub fn open(&self, port_name: &str) -> serialport::Result<Box<dyn SerialPort>> {
         let mut port = serialport::new(port_name, self.baud_rate)
             .data_bits(self.data_bits)
@@ -47,9 +51,10 @@ impl SerialConfig {
             .timeout(self.timeout)
             .open()?;
 
-        // RTS / DTR выставляются один раз при открытии и не меняются.
-        port.write_request_to_send(self.rts)?;
-        port.write_data_terminal_ready(self.dtr)?;
+        // Java: CLEAR_DTR. RTS не трогаем.
+        if self.clear_dtr {
+            let _ = port.write_data_terminal_ready(false);
+        }
         Ok(port)
     }
 }

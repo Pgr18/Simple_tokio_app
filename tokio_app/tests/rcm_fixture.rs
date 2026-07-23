@@ -55,30 +55,30 @@ fn load_fixture_matching(required: &[&str]) -> Option<(PathBuf, Vec<u8>)> {
 }
 
 /// Синтетический кадр с корректными флагами bit0 (как у РКМ-С: bit7=0).
+/// Раскладка Java `RcmInVariable`: rheo2 на паре 2.
 fn make_rcms_like_frame(rheo1: (u8, u8), base1: (u8, u8), ecg: (u8, u8), base2: (u8, u8), rheo2: (u8, u8)) -> [u8; 20] {
     let mut f = [0u8; 20];
     let pairs = [
         (0, rheo1, true),
         (1, base1, false),
-        (2, (0x02, 0x04), false), // unused noise
+        (2, rheo2, false), // RHEO_2
         (3, ecg, false),
         (4, base2, false),
-        (5, (0x10, 0x20), false),
-        (6, (0x12, 0x22), false),
-        (7, rheo2, true),
-        (8, (0x14, 0x24), false),
-        (9, (0x01, 0x00), false), // service
+        (5, (0x10, 0x20), false), // RHEO_1X
+        (6, (0x12, 0x22), false), // QS_1
+        (7, (0x14, 0x24), false), // RHEO_2X
+        (8, (0x16, 0x26), false), // ECG_X
+        (9, (0x01, 0x00), false), // QS_2 / service
     ];
     for (idx, (high, low), is_marker) in pairs {
         let mut h = high & 0x7E;
         let mut l = low & 0x7E;
         if idx == 0 || is_marker {
-            h &= !1; // bit0 = 0 на старте кадра
+            h &= !1;
         } else {
-            // у РКМ-С bit7=0; bit0 старших (кроме маркера) обычно 1
             h = (h & !1) | 1;
         }
-        l &= !1; // low bit0 = 0
+        l &= !1;
         f[idx * 2] = h;
         f[idx * 2 + 1] = l;
     }
@@ -119,9 +119,9 @@ fn decode_frame_and_rcms_are_identical() {
 
     assert_eq!(a.rheo1, convert(raw[0], raw[1], true));
     assert_eq!(a.base1, convert(raw[2], raw[3], false));
+    assert_eq!(a.rheo2, convert(raw[4], raw[5], true));
     assert_eq!(a.ecg, convert(raw[6], raw[7], true));
     assert_eq!(a.base2, convert(raw[8], raw[9], false));
-    assert_eq!(a.rheo2, convert(raw[14], raw[15], true));
 }
 
 #[test]
@@ -250,6 +250,10 @@ fn synchronizer_handles_chunked_input() {
     let mut out = Vec::new();
     for chunk in frame.chunks(3) {
         out.extend(sync.push_bytes(chunk));
+    }
+    // Java-sync отдаёт кадр только после первого байта следующего.
+    if let Some(last) = sync.flush() {
+        out.push(last);
     }
     assert_eq!(out.len(), 1);
     assert_eq!(out[0], frame);

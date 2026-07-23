@@ -1,12 +1,12 @@
-//! Автопоиск COM-порта с прибором РКМ / РКМ-С по валидным кадрам протокола.
+//! Автопоиск COM-порта: только 7N1 (JavaFX), короткий probe.
 
 use super::serial::SerialConfig;
 use super::sync::FrameSynchronizer;
 use std::time::{Duration, Instant};
 
-const MIN_FRAMES: usize = 10;
-const PROBE_DURATION: Duration = Duration::from_millis(800);
-const SETTLE_DURATION: Duration = Duration::from_millis(80);
+const MIN_FRAMES: usize = 5;
+const PROBE_DURATION: Duration = Duration::from_millis(350);
+const SETTLE_DURATION: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone)]
 pub struct ProbeResult {
@@ -14,31 +14,28 @@ pub struct ProbeResult {
     pub frames: usize,
     pub resyncs: u64,
     pub bytes_read: usize,
+    pub config: SerialConfig,
 }
 
 impl ProbeResult {
     pub fn looks_like_rcm(&self) -> bool {
-        // На живой линии допускаем редкие resync; главное — устойчивый поток кадров.
-        self.frames >= MIN_FRAMES
-            && self.bytes_read >= 400
-            && (self.resyncs as usize) <= self.frames.saturating_mul(3)
+        self.frames >= MIN_FRAMES && self.bytes_read >= 100
     }
 
     pub fn score(&self) -> i64 {
-        self.frames as i64 * 10 - self.resyncs as i64
+        self.frames as i64 * 100 - self.resyncs as i64
+            + if self.bytes_read > 200 { 50 } else { 0 }
     }
 }
 
-/// Пробует один порт: открывает с конфигом РКМ, читает поток и считает кадры.
 pub fn probe_port(port_name: &str, config: &SerialConfig) -> Result<ProbeResult, String> {
     let mut probe_cfg = config.clone();
-    probe_cfg.timeout = Duration::from_millis(30);
+    probe_cfg.timeout = Duration::from_millis(10);
 
     let mut port = probe_cfg
         .open(port_name)
-        .map_err(|e| format!("{port_name}: не удалось открыть ({e})"))?;
+        .map_err(|e| format!("{port_name} [7N1]: не открыть ({e})"))?;
 
-    // Сброс мусора после RTS/DTR.
     let settle_deadline = Instant::now() + SETTLE_DURATION;
     let mut trash = [0u8; 512];
     while Instant::now() < settle_deadline {
@@ -48,7 +45,7 @@ pub fn probe_port(port_name: &str, config: &SerialConfig) -> Result<ProbeResult,
     let mut sync = FrameSynchronizer::new();
     let mut frames = 0usize;
     let mut bytes_read = 0usize;
-    let mut buf = [0u8; 512];
+    let mut buf = [0u8; 1024];
     let deadline = Instant::now() + PROBE_DURATION;
 
     while Instant::now() < deadline {
@@ -59,9 +56,7 @@ pub fn probe_port(port_name: &str, config: &SerialConfig) -> Result<ProbeResult,
             }
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(e) => {
-                return Err(format!("{port_name}: ошибка чтения ({e})"));
-            }
+            Err(e) => return Err(format!("{port_name}: ошибка чтения ({e})")),
         }
     }
 
@@ -72,26 +67,36 @@ pub fn probe_port(port_name: &str, config: &SerialConfig) -> Result<ProbeResult,
         frames,
         resyncs: sync.resync_count,
         bytes_read,
+        config: config.clone(),
     })
 }
 
-pub fn find_rcm_port(config: &SerialConfig) -> Option<ProbeResult> {
-    find_rcm_port_among(list_port_names(), config)
+pub fn find_rcm_port(baud_rate: u32) -> Option<ProbeResult> {
+    find_rcm_port_among(list_port_names(), baud_rate)
 }
 
-pub fn find_rcm_port_among(ports: Vec<String>, config: &SerialConfig) -> Option<ProbeResult> {
+pub fn find_rcm_port_among(ports: Vec<String>, baud_rate: u32) -> Option<ProbeResult> {
+    let cfg = SerialConfig::rcm_7n1(baud_rate);
     let mut best: Option<ProbeResult> = None;
+    let mut best_any: Option<ProbeResult> = None;
 
-    for name in ports {
-        match probe_port(&name, config) {
+    for name in &ports {
+        match probe_port(name, &cfg) {
             Ok(result) => {
                 eprintln!(
-                    "probe {name}: frames={}, resyncs={}, bytes={}, score={}",
+                    "probe {name} [7N1]: frames={}, resyncs={}, bytes={}, score={}",
                     result.frames,
                     result.resyncs,
                     result.bytes_read,
                     result.score()
                 );
+                let better_any = best_any
+                    .as_ref()
+                    .map(|b| result.score() > b.score())
+                    .unwrap_or(true);
+                if better_any {
+                    best_any = Some(result.clone());
+                }
                 if result.looks_like_rcm() {
                     let better = best
                         .as_ref()
@@ -106,7 +111,7 @@ pub fn find_rcm_port_among(ports: Vec<String>, config: &SerialConfig) -> Option<
         }
     }
 
-    best
+    best.or_else(|| best_any.filter(|r| r.bytes_read >= 50 || r.frames >= 1))
 }
 
 pub fn list_port_names() -> Vec<String> {

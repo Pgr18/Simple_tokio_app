@@ -1,8 +1,7 @@
 //! Синхронизация 20-байтных кадров РКМ / РКМ-С.
 //!
-//! Старт кадра: два подряд байта с bit0 == 0 (старший+младший РЕО-1).
-//! После захвата («locked») проверяем только маркер пары РЕО-1 — иначе единичный
-//! сбой bit0 на другом канале срывает синхронизацию на всём живом потоке.
+//! Как Java `AbstractFixedFrameBytesInterceptor` + `AbstractRcmBytesInterceptor.check`.
+//! RCMS (`RcmsBytesInterceptor`): дополнительно `buffer[19] == 0`.
 
 use std::collections::VecDeque;
 
@@ -15,11 +14,26 @@ pub enum SyncError {
     InvalidFrame,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FrameSynchronizer {
-    buf: VecDeque<u8>,
-    locked: bool,
+    incoming: VecDeque<u8>,
+    window: [u8; FRAME_SIZE],
+    filled: usize,
+    /// RCMS: последний байт кадра должен быть 0.
+    pub require_last_zero: bool,
     pub resync_count: u64,
+}
+
+impl Default for FrameSynchronizer {
+    fn default() -> Self {
+        Self {
+            incoming: VecDeque::new(),
+            window: [0u8; FRAME_SIZE],
+            filled: 0,
+            require_last_zero: false,
+            resync_count: 0,
+        }
+    }
 }
 
 impl FrameSynchronizer {
@@ -27,124 +41,103 @@ impl FrameSynchronizer {
         Self::default()
     }
 
+    pub fn new_rcms() -> Self {
+        Self {
+            require_last_zero: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn set_rcms(&mut self, rcms: bool) {
+        self.require_last_zero = rcms;
+    }
+
     pub fn clear(&mut self) {
-        self.buf.clear();
-        self.locked = false;
+        self.incoming.clear();
+        self.window = [0u8; FRAME_SIZE];
+        self.filled = 0;
     }
 
     pub fn is_locked(&self) -> bool {
-        self.locked
+        self.filled == FRAME_SIZE
     }
 
     pub fn buffer_len(&self) -> usize {
-        self.buf.len()
+        self.incoming.len() + self.filled
     }
 
     pub fn push_bytes(&mut self, bytes: &[u8]) -> Vec<[u8; FRAME_SIZE]> {
-        self.buf.extend(bytes);
+        self.incoming.extend(bytes);
         let mut frames = Vec::new();
-        while let Some(frame) = self.try_next_frame() {
-            frames.push(frame);
-        }
-        if self.buf.len() > 4096 {
-            self.buf.clear();
-            self.locked = false;
-            self.resync_count += 1;
+        while let Some(b) = self.incoming.pop_front() {
+            if let Some(frame) = self.push_one(b) {
+                frames.push(frame);
+            }
         }
         frames
     }
 
-    fn try_next_frame(&mut self) -> Option<[u8; FRAME_SIZE]> {
-        loop {
-            if self.locked {
-                if self.buf.len() < FRAME_SIZE {
-                    return None;
-                }
-                let frame = self.peek_frame(0)?;
-                // В lock — только маркер РЕО-1 (мягкая проверка).
-                if validate_marker(&frame) {
-                    self.drain(FRAME_SIZE);
-                    return Some(frame);
-                }
-                self.locked = false;
-                self.resync_count += 1;
-                if !self.buf.is_empty() {
-                    self.buf.pop_front();
-                }
-                continue;
-            }
-
-            let start = self.find_frame_start()?;
-            if self.buf.len() < start + FRAME_SIZE {
-                if start > 0 {
-                    self.drain(start);
-                }
-                return None;
-            }
-
-            let frame = self.peek_frame(start)?;
-            // При поиске — полная проверка младших байт.
-            if validate_frame(&frame) {
-                self.drain(start + FRAME_SIZE);
-                self.locked = true;
-                return Some(frame);
-            }
-
-            self.drain(start + 1);
-            self.resync_count += 1;
+    pub fn flush(&mut self) -> Option<[u8; FRAME_SIZE]> {
+        if self.filled == FRAME_SIZE && self.check(&self.window, 0) {
+            let frame = self.window;
+            self.window = [0u8; FRAME_SIZE];
+            self.filled = 0;
+            Some(frame)
+        } else {
+            None
         }
     }
 
-    fn find_frame_start(&self) -> Option<usize> {
-        let len = self.buf.len();
-        if len < 2 {
+    fn check(&self, buffer: &[u8; FRAME_SIZE], next: u8) -> bool {
+        if self.require_last_zero && buffer[FRAME_SIZE - 1] != 0 {
+            return false;
+        }
+        check_frame(buffer, next)
+    }
+
+    fn push_one(&mut self, b: u8) -> Option<[u8; FRAME_SIZE]> {
+        if self.filled < FRAME_SIZE {
+            self.window[self.filled] = b;
+            self.filled += 1;
             return None;
         }
-        for i in 0..=len - 2 {
-            let a = *self.buf.get(i)?;
-            let b = *self.buf.get(i + 1)?;
-            if bit0_clear(a) && bit0_clear(b) {
-                return Some(i);
-            }
+
+        if self.check(&self.window, b) {
+            let frame = self.window;
+            self.window = [0u8; FRAME_SIZE];
+            self.window[0] = b;
+            self.filled = 1;
+            return Some(frame);
         }
+
+        self.window.copy_within(1..FRAME_SIZE, 0);
+        self.window[FRAME_SIZE - 1] = b;
+        self.filled = FRAME_SIZE;
+        self.resync_count += 1;
         None
     }
-
-    fn peek_frame(&self, start: usize) -> Option<[u8; FRAME_SIZE]> {
-        if self.buf.len() < start + FRAME_SIZE {
-            return None;
-        }
-        let mut frame = [0u8; FRAME_SIZE];
-        for (i, slot) in frame.iter_mut().enumerate() {
-            *slot = *self.buf.get(start + i)?;
-        }
-        Some(frame)
-    }
-
-    fn drain(&mut self, n: usize) {
-        for _ in 0..n.min(self.buf.len()) {
-            self.buf.pop_front();
-        }
-    }
 }
 
-#[inline]
-fn bit0_clear(b: u8) -> bool {
-    b & 0x01 == 0
+/// Java `AbstractRcmBytesInterceptor.check`.
+pub fn check_frame(buffer: &[u8; FRAME_SIZE], next_frame_start: u8) -> bool {
+    for i in 1..FRAME_SIZE {
+        if buffer[i] == (i as u8 & 0x01) {
+            return false;
+        }
+    }
+    (buffer[0] & 0x01) == 0 && (next_frame_start & 0x01) == 0
 }
 
-/// Маркер начала: старший и младший байт РЕО-1 с bit0 == 0.
 pub fn validate_marker(frame: &[u8; FRAME_SIZE]) -> bool {
-    bit0_clear(frame[0]) && bit0_clear(frame[1])
+    frame[0] & 0x01 == 0
 }
 
-/// Полная валидация при захвате синхронизации.
 pub fn validate_frame(frame: &[u8; FRAME_SIZE]) -> bool {
     if !validate_marker(frame) {
         return false;
     }
     for i in (1..FRAME_SIZE).step_by(2) {
-        if !bit0_clear(frame[i]) {
+        if frame[i] & 0x01 != 0 {
             return false;
         }
     }
@@ -180,10 +173,10 @@ mod tests {
         for n in 0..50u8 {
             stream.extend_from_slice(&make_frame(n));
         }
+        stream.push(make_frame(50)[0]);
         let frames = sync.push_bytes(&stream);
         assert_eq!(frames.len(), 50);
         assert_eq!(sync.resync_count, 0);
-        assert!(sync.buf.is_empty());
     }
 
     #[test]
@@ -192,6 +185,7 @@ mod tests {
         let mut stream = vec![0x01, 0x03, 0x05, 0x07];
         stream.extend_from_slice(&make_frame(10));
         stream.extend_from_slice(&make_frame(11));
+        stream.push(make_frame(12)[0]);
         let frames = sync.push_bytes(&stream);
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0], make_frame(10));
@@ -202,13 +196,16 @@ mod tests {
         let mut sync = FrameSynchronizer::new();
         let f0 = make_frame(1);
         let mut f1 = make_frame(2);
-        // После lock портим low BASE (offset 3) — bit0=1
         f1[3] |= 1;
+        if f1[3] == 1 {
+            f1[3] = 3;
+        }
         let mut stream = Vec::new();
         stream.extend_from_slice(&f0);
         stream.extend_from_slice(&f1);
+        stream.push(make_frame(3)[0]);
         let frames = sync.push_bytes(&stream);
-        assert_eq!(frames.len(), 2, "soft lock should keep second frame");
+        assert_eq!(frames.len(), 2);
     }
 
     #[test]
@@ -219,7 +216,29 @@ mod tests {
         let mut stream = Vec::new();
         stream.extend_from_slice(&f0);
         stream.extend_from_slice(&f1);
+        stream.push(make_frame(3)[0]);
+        assert_eq!(sync.push_bytes(&stream).len(), 2);
+    }
+
+    #[test]
+    fn java_fixture_style_frame() {
+        let frame: [u8; 20] = [
+            0xf6, 0xdc, 0x83, 0xb8, 0xfb, 0xc4, 0x83, 0x84, 0x91, 0xa2, 0xf9, 0x9e, 0x81, 0x80,
+            0xfb, 0xb2, 0x81, 0xf6, 0x81, 0x80,
+        ];
+        assert!(check_frame(&frame, 0xf6));
+    }
+
+    #[test]
+    fn rcms_rejects_nonzero_tail() {
+        let mut sync = FrameSynchronizer::new_rcms();
+        let mut bad = make_frame(1);
+        bad[19] = 0x02;
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&bad);
+        stream.extend_from_slice(&make_frame(2));
+        stream.push(make_frame(3)[0]);
         let frames = sync.push_bytes(&stream);
-        assert_eq!(frames.len(), 2);
+        assert!(frames.iter().all(|f| f[19] == 0));
     }
 }

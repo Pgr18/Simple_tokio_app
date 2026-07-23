@@ -30,23 +30,21 @@ pub fn convert(high: u8, low: u8, bipolar: bool) -> i32 {
     }
 }
 
-/// Декодирует кадр РКМ (базовая версия).
+/// Декодирует кадр РКМ / РКМ-С.
 ///
-/// Используемые слоты (offsets от начала кадра):
-/// - 0–1: РЕО-1 (биполярный)
-/// - 2–3: BASE-1 (униполярный)
-/// - 6–7: ЭКГ (биполярный)
-/// - 8–9: BASE-2 (униполярный)
-/// - 14–15: РЕО-2 (биполярный)
-///
-/// Слоты 3, 6, 7, 9 и служебный 10-й пропускаются.
+/// Раскладка как Java `RcmInVariable`:
+/// - 0–1: РЕО-1 (биполярный, с инверсией для отображения)
+/// - 2–3: BASE-1
+/// - 4–5: РЕО-2
+/// - 6–7: ЭКГ
+/// - 8–9: BASE-2
 pub fn decode_frame(raw: &[u8; 20]) -> Frame {
     Frame::new(
         convert(raw[0], raw[1], true),
         convert(raw[2], raw[3], false),
         convert(raw[6], raw[7], true),
         convert(raw[8], raw[9], false),
-        convert(raw[14], raw[15], true),
+        convert(raw[4], raw[5], true),
     )
 }
 
@@ -80,40 +78,34 @@ mod tests {
     fn decode_skips_unused_slots() {
         let mut raw = [0u8; 20];
         // РЕО-1
-        raw[0] = 0x02; // bit0=0 (маркер), data
+        raw[0] = 0x02;
         raw[1] = 0x04;
         // BASE-1
         raw[2] = 0x03;
         raw[3] = 0x06;
-        // unused 3 — мусор, не должен попасть в Frame
-        raw[4] = 0x7E;
-        raw[5] = 0x7E;
+        // РЕО-2 (пара 2)
+        raw[4] = 0x09;
+        raw[5] = 0x0C;
         // ЭКГ
         raw[6] = 0x05;
         raw[7] = 0x08;
         // BASE-2
         raw[8] = 0x07;
         raw[9] = 0x0A;
-        // unused 6,7,9
-        raw[10] = 0x7E;
-        raw[11] = 0x7E;
-        raw[12] = 0x7E;
-        raw[13] = 0x7E;
-        // РЕО-2
-        raw[14] = 0x09;
-        raw[15] = 0x0C;
-        raw[16] = 0x7E;
-        raw[17] = 0x7E;
-        // служебный 10
+        // остальные пары — мусор
+        for i in 5..10 {
+            raw[i * 2] = 0x7E;
+            raw[i * 2 + 1] = 0x7E;
+        }
         raw[18] = 0x01;
         raw[19] = 0x00;
 
         let frame = decode_frame(&raw);
         assert_eq!(frame.rheo1, convert(0x02, 0x04, true));
         assert_eq!(frame.base1, convert(0x03, 0x06, false));
+        assert_eq!(frame.rheo2, convert(0x09, 0x0C, true));
         assert_eq!(frame.ecg, convert(0x05, 0x08, true));
         assert_eq!(frame.base2, convert(0x07, 0x0A, false));
-        assert_eq!(frame.rheo2, convert(0x09, 0x0C, true));
 
         let rcms = decode_frame_rcms(&raw);
         assert_eq!(frame.rheo1, rcms.rheo1);

@@ -4,11 +4,9 @@ use super::serial::SerialConfig;
 use super::sync::FrameSynchronizer;
 use std::time::{Duration, Instant};
 
-/// Минимальное число успешно собранных кадров, чтобы считать порт «прибором».
-const MIN_FRAMES: usize = 5;
-
-/// Сколько времени слушать каждый порт при пробе.
-const PROBE_DURATION: Duration = Duration::from_millis(400);
+const MIN_FRAMES: usize = 10;
+const PROBE_DURATION: Duration = Duration::from_millis(800);
+const SETTLE_DURATION: Duration = Duration::from_millis(80);
 
 #[derive(Debug, Clone)]
 pub struct ProbeResult {
@@ -20,19 +18,32 @@ pub struct ProbeResult {
 
 impl ProbeResult {
     pub fn looks_like_rcm(&self) -> bool {
-        self.frames >= MIN_FRAMES && self.resyncs == 0
+        // На живой линии допускаем редкие resync; главное — устойчивый поток кадров.
+        self.frames >= MIN_FRAMES
+            && self.bytes_read >= 400
+            && (self.resyncs as usize) <= self.frames.saturating_mul(3)
+    }
+
+    pub fn score(&self) -> i64 {
+        self.frames as i64 * 10 - self.resyncs as i64
     }
 }
 
 /// Пробует один порт: открывает с конфигом РКМ, читает поток и считает кадры.
 pub fn probe_port(port_name: &str, config: &SerialConfig) -> Result<ProbeResult, String> {
     let mut probe_cfg = config.clone();
-    // Короткий timeout, чтобы цикл чтения не зависал на пустом порту.
     probe_cfg.timeout = Duration::from_millis(30);
 
     let mut port = probe_cfg
         .open(port_name)
         .map_err(|e| format!("{port_name}: не удалось открыть ({e})"))?;
+
+    // Сброс мусора после RTS/DTR.
+    let settle_deadline = Instant::now() + SETTLE_DURATION;
+    let mut trash = [0u8; 512];
+    while Instant::now() < settle_deadline {
+        let _ = port.read(&mut trash);
+    }
 
     let mut sync = FrameSynchronizer::new();
     let mut frames = 0usize;
@@ -64,14 +75,10 @@ pub fn probe_port(port_name: &str, config: &SerialConfig) -> Result<ProbeResult,
     })
 }
 
-/// Перебирает доступные COM-порты и возвращает первый, похожий на РКМ / РКМ-С.
-///
-/// Критерий: за ~400 мс получено ≥5 валидных кадров без потери синхронизации.
 pub fn find_rcm_port(config: &SerialConfig) -> Option<ProbeResult> {
     find_rcm_port_among(list_port_names(), config)
 }
 
-/// То же, но по заданному списку имён портов (удобно для UI / тестов).
 pub fn find_rcm_port_among(ports: Vec<String>, config: &SerialConfig) -> Option<ProbeResult> {
     let mut best: Option<ProbeResult> = None;
 
@@ -79,15 +86,18 @@ pub fn find_rcm_port_among(ports: Vec<String>, config: &SerialConfig) -> Option<
         match probe_port(&name, config) {
             Ok(result) => {
                 eprintln!(
-                    "probe {name}: frames={}, resyncs={}, bytes={}",
-                    result.frames, result.resyncs, result.bytes_read
+                    "probe {name}: frames={}, resyncs={}, bytes={}, score={}",
+                    result.frames,
+                    result.resyncs,
+                    result.bytes_read,
+                    result.score()
                 );
                 if result.looks_like_rcm() {
-                    if best
+                    let better = best
                         .as_ref()
-                        .map(|b| result.frames > b.frames)
-                        .unwrap_or(true)
-                    {
+                        .map(|b| result.score() > b.score())
+                        .unwrap_or(true);
+                    if better {
                         best = Some(result);
                     }
                 }

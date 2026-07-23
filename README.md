@@ -12,6 +12,18 @@ GUI-приложение (egui) для чтения потока с COM-порт
 - **РКМ** и **РКМ-С** дают один и тот же `Frame`; у РКМ-С бит 7 всегда 0 (на decode не влияет).
 - Неиспользуемые слоты (3, 6, 7, 9, 10) в модель не попадают.
 
+## Фильтры данных (RCM / RCMS)
+
+После декода кадра данные проходят цепочку как в JavaFX-референсе:
+
+- **RcmIn** — 10 каналов (`RcmConverter`), signed expand для RHEO/ECG  
+- **RcmOut** — µΩ / mΩ / Ω / mV + `smoothingImpulsive(4)`, FIR BASE (BR_F200/025/005)  
+- **RCMS** — pass-through поверх RcmOut (`QS_2` ← `QS_1`)  
+- **Calibration** — RRS / peak-to-peak по RHEO/BASE/QS  
+
+Ресурсы: `tokio_app/resources/rcm/` (`rcm.json`, `BR_F*.txt`).  
+В UI: выбор профиля + чекбокс «Фильтры».
+
 ## COM-порт (по умолчанию)
 
 `38400, 8N1, RTS=true, DTR=false` — по документации базового РКМ; для РКМ-С отдельной

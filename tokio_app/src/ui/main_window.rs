@@ -1,6 +1,7 @@
 use eframe::egui;
 use crate::com_port::{find_rcm_port_among, ComPortReader, SerialConfig};
 use crate::data::processor::DataProcessor;
+use crate::data::RcmProfile;
 use super::plots::PlotManager;
 use dirs::download_dir;
 use std::path::PathBuf;
@@ -314,8 +315,13 @@ impl eframe::App for MainWindow {
         self.handle_hotkeys(ctx);
 
         if self.is_connected {
-            if let Some(packet) = self.com_reader.read_data() {
-                self.data_processor.add_packet(packet);
+            // Не более ~100 мс данных за кадр UI (200 Гц → 20 сэмплов), иначе UI «зависает».
+            const MAX_FRAMES_PER_TICK: usize = 40;
+            for _ in 0..MAX_FRAMES_PER_TICK {
+                let Some(raw) = self.com_reader.read_raw_frame() else {
+                    break;
+                };
+                self.data_processor.add_raw_frame(&raw);
             }
         }
 
@@ -380,6 +386,29 @@ impl eframe::App for MainWindow {
                         }
                     });
                     ui.label(&self.port_status);
+                    ui.horizontal(|ui| {
+                        ui.label("Профиль:");
+                        let mut profile = self.data_processor.profile();
+                        egui::ComboBox::from_id_source("rcm_profile")
+                            .selected_text(match profile {
+                                RcmProfile::Rcm => "RCM",
+                                RcmProfile::Rcms => "RCMS",
+                                RcmProfile::Calibration => "Calibration",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut profile, RcmProfile::Rcm, "RCM");
+                                ui.selectable_value(&mut profile, RcmProfile::Rcms, "RCMS");
+                                ui.selectable_value(&mut profile, RcmProfile::Calibration, "Calibration");
+                            });
+                        if profile != self.data_processor.profile() {
+                            self.data_processor.set_profile(profile);
+                        }
+
+                        let mut filters_on = self.data_processor.filters_enabled();
+                        if ui.checkbox(&mut filters_on, "Фильтры").changed() {
+                            self.data_processor.set_filters_enabled(filters_on);
+                        }
+                    });
                 });
 
                 ui.separator();

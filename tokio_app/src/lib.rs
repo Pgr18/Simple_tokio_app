@@ -7,3 +7,4 @@ pub use com_port::{
     ChannelType, ComPortReader, DataPacket, DumpStats, Frame, FrameSynchronizer, ProbeResult,
     SerialConfig,
 };
+pub use data::{RcmCalibration, RcmOutSample, RcmPipeline, RcmProfile};

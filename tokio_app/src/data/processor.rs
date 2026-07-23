@@ -1,6 +1,8 @@
 use crate::com_port::DataPacket;
+use crate::data::rcm_pipeline::{RcmOutSample, RcmPipeline, RcmProfile};
 use chrono::Local;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct RecordedPacket {
@@ -11,6 +13,8 @@ pub struct RecordedPacket {
     pub ecg: f64,
     pub base2: f64,
     pub rheo2: f64,
+    pub qs1: f64,
+    pub qs2: f64,
 }
 
 pub struct DataProcessor {
@@ -20,15 +24,24 @@ pub struct DataProcessor {
     ecg: Vec<(f64, f64)>,
     base2: Vec<(f64, f64)>,
     rheo2: Vec<(f64, f64)>,
+    qs1: Vec<(f64, f64)>,
+    qs2: Vec<(f64, f64)>,
     recorded_data: Vec<RecordedPacket>,
     session_start_time: Option<u64>,
     auto_recording: bool,
     recording_start_datetime: Option<String>,
     session_counter: u32,
+    pipeline: RcmPipeline,
+    sample_index: u64,
+    filters_enabled: bool,
 }
 
 impl DataProcessor {
     pub fn new(max_points: usize) -> Self {
+        Self::with_profile(max_points, RcmProfile::Rcms)
+    }
+
+    pub fn with_profile(max_points: usize, profile: RcmProfile) -> Self {
         let now = Local::now();
         let initial_datetime = Some(now.format("%Y-%m-%d %H-%M-%S").to_string());
 
@@ -39,11 +52,80 @@ impl DataProcessor {
             ecg: Vec::with_capacity(max_points),
             base2: Vec::with_capacity(max_points),
             rheo2: Vec::with_capacity(max_points),
+            qs1: Vec::with_capacity(max_points),
+            qs2: Vec::with_capacity(max_points),
             recorded_data: Vec::new(),
             session_start_time: None,
             auto_recording: true,
             recording_start_datetime: initial_datetime,
             session_counter: 1,
+            pipeline: RcmPipeline::new(profile),
+            sample_index: 0,
+            // По умолчанию — сырой decode по протоколу (5 каналов), без тяжёлой калибровки.
+            // Тяжёлые FIR/Ohm включаются чекбоксом «Фильтры».
+            filters_enabled: false,
+        }
+    }
+
+    pub fn set_profile(&mut self, profile: RcmProfile) {
+        self.pipeline.set_profile(profile);
+        self.sample_index = 0;
+    }
+
+    pub fn profile(&self) -> RcmProfile {
+        self.pipeline.profile()
+    }
+
+    pub fn set_filters_enabled(&mut self, enabled: bool) {
+        self.filters_enabled = enabled;
+    }
+
+    pub fn filters_enabled(&self) -> bool {
+        self.filters_enabled
+    }
+
+    /// Сырой 20-байтный кадр → фильтры → буферы графиков.
+    pub fn add_raw_frame(&mut self, raw: &[u8; 20]) {
+        let timestamp = now_ms();
+        if self.session_start_time.is_none() {
+            self.session_start_time = Some(timestamp);
+        }
+
+        if self.filters_enabled {
+            for sample in self.pipeline.process_raw(raw) {
+                self.push_filtered(sample, timestamp);
+            }
+        } else {
+            let frame = crate::com_port::decode::decode_frame(raw);
+            self.add_packet(frame);
+        }
+    }
+
+    fn push_filtered(&mut self, sample: RcmOutSample, timestamp: u64) {
+        let time_seconds = self.sample_index as f64 / 200.0;
+        self.sample_index += 1;
+
+        let max_points = self.max_points;
+        Self::push_point(&mut self.rheo1, time_seconds, sample.rheo1 as f64, max_points);
+        Self::push_point(&mut self.base1, time_seconds, sample.base1 as f64, max_points);
+        Self::push_point(&mut self.ecg, time_seconds, sample.ecg as f64, max_points);
+        Self::push_point(&mut self.base2, time_seconds, sample.base2 as f64, max_points);
+        Self::push_point(&mut self.rheo2, time_seconds, sample.rheo2 as f64, max_points);
+        Self::push_point(&mut self.qs1, time_seconds, sample.qs1 as f64, max_points);
+        Self::push_point(&mut self.qs2, time_seconds, sample.qs2 as f64, max_points);
+
+        if self.auto_recording {
+            self.recorded_data.push(RecordedPacket {
+                timestamp,
+                time_seconds,
+                rheo1: sample.rheo1 as f64,
+                base1: sample.base1 as f64,
+                ecg: sample.ecg as f64,
+                base2: sample.base2 as f64,
+                rheo2: sample.rheo2 as f64,
+                qs1: sample.qs1 as f64,
+                qs2: sample.qs2 as f64,
+            });
         }
     }
 
@@ -74,6 +156,8 @@ impl DataProcessor {
                 ecg: packet.ecg as f64,
                 base2: packet.base2 as f64,
                 rheo2: packet.rheo2 as f64,
+                qs1: 0.0,
+                qs2: 0.0,
             });
         }
     }
@@ -92,6 +176,8 @@ impl DataProcessor {
             self.ecg.last(),
             self.base2.last(),
             self.rheo2.last(),
+            self.qs1.last(),
+            self.qs2.last(),
         ]
         .into_iter()
         .flatten()
@@ -123,6 +209,14 @@ impl DataProcessor {
         &self.rheo2
     }
 
+    pub fn get_qs1(&self) -> &[(f64, f64)] {
+        &self.qs1
+    }
+
+    pub fn get_qs2(&self) -> &[(f64, f64)] {
+        &self.qs2
+    }
+
     pub fn save_to_csv<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
         if self.recorded_data.is_empty() {
             return Err("No recorded data to save".into());
@@ -131,11 +225,13 @@ impl DataProcessor {
         let mut wtr = csv::Writer::from_path(path)?;
         wtr.write_record([
             "time_seconds",
-            "rheo1",
-            "base1",
-            "ecg",
-            "base2",
-            "rheo2",
+            "rheo1_uOhm",
+            "base1_mOhm",
+            "ecg_mV",
+            "base2_mOhm",
+            "rheo2_uOhm",
+            "qs1_Ohm",
+            "qs2_Ohm",
         ])?;
 
         for packet in &self.recorded_data {
@@ -146,6 +242,8 @@ impl DataProcessor {
                 packet.ecg.to_string(),
                 packet.base2.to_string(),
                 packet.rheo2.to_string(),
+                packet.qs1.to_string(),
+                packet.qs2.to_string(),
             ])?;
         }
 
@@ -186,6 +284,7 @@ impl DataProcessor {
         self.clear_channels();
         self.recorded_data.clear();
         self.session_start_time = None;
+        self.sample_index = 0;
         self.update_recording_start_time();
         self.session_counter += 1;
     }
@@ -202,6 +301,7 @@ impl DataProcessor {
         self.clear_channels();
         self.recorded_data.clear();
         self.session_start_time = None;
+        self.sample_index = 0;
         self.auto_recording = true;
         self.update_recording_start_time();
         self.session_counter = 1;
@@ -213,5 +313,14 @@ impl DataProcessor {
         self.ecg.clear();
         self.base2.clear();
         self.rheo2.clear();
+        self.qs1.clear();
+        self.qs2.clear();
     }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }

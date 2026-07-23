@@ -1,8 +1,8 @@
 //! Синхронизация 20-байтных кадров РКМ / РКМ-С.
 //!
-//! Маркер начала кадра: три подряд байта с bit0 == 0; второй из тройки — начало кадра
-//! (старший байт РЕО-1). У младших байт пар bit0 в норме всегда 0; у старшего байта
-//! РЕО-1 bit0 принудительно сброшен. Алгоритм общий для базового РКМ и РКМ-С.
+//! Старт кадра: два подряд байта с bit0 == 0 (старший+младший РЕО-1).
+//! После захвата («locked») проверяем только маркер пары РЕО-1 — иначе единичный
+//! сбой bit0 на другом канале срывает синхронизацию на всём живом потоке.
 
 use std::collections::VecDeque;
 
@@ -11,16 +11,13 @@ pub const FRAME_SIZE: usize = 20;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum SyncError {
-    /// Недостаточно байт для кадра / маркера.
     NeedMoreData,
-    /// Кандидат не прошёл валидацию младших байт.
     InvalidFrame,
 }
 
 #[derive(Debug, Default)]
 pub struct FrameSynchronizer {
     buf: VecDeque<u8>,
-    /// После успешного кадра читаем следующие 20 байт без повторного поиска маркера.
     locked: bool,
     pub resync_count: u64,
 }
@@ -35,18 +32,20 @@ impl FrameSynchronizer {
         self.locked = false;
     }
 
+    pub fn is_locked(&self) -> bool {
+        self.locked
+    }
+
     pub fn buffer_len(&self) -> usize {
         self.buf.len()
     }
 
-    /// Добавляет байты и возвращает все успешно собранные кадры.
     pub fn push_bytes(&mut self, bytes: &[u8]) -> Vec<[u8; FRAME_SIZE]> {
         self.buf.extend(bytes);
         let mut frames = Vec::new();
         while let Some(frame) = self.try_next_frame() {
             frames.push(frame);
         }
-        // Защита от раздувания буфера при полном мусоре в линии
         if self.buf.len() > 4096 {
             self.buf.clear();
             self.locked = false;
@@ -62,14 +61,13 @@ impl FrameSynchronizer {
                     return None;
                 }
                 let frame = self.peek_frame(0)?;
-                if validate_frame(&frame) {
+                // В lock — только маркер РЕО-1 (мягкая проверка).
+                if validate_marker(&frame) {
                     self.drain(FRAME_SIZE);
                     return Some(frame);
                 }
-                // Потеря синхронизации — ищем маркер заново
                 self.locked = false;
                 self.resync_count += 1;
-                // сдвигаемся на 1 байт и продолжаем поиск
                 if !self.buf.is_empty() {
                     self.buf.pop_front();
                 }
@@ -78,7 +76,6 @@ impl FrameSynchronizer {
 
             let start = self.find_frame_start()?;
             if self.buf.len() < start + FRAME_SIZE {
-                // Маркер найден, но кадра ещё нет — ждём
                 if start > 0 {
                     self.drain(start);
                 }
@@ -86,21 +83,18 @@ impl FrameSynchronizer {
             }
 
             let frame = self.peek_frame(start)?;
+            // При поиске — полная проверка младших байт.
             if validate_frame(&frame) {
                 self.drain(start + FRAME_SIZE);
                 self.locked = true;
                 return Some(frame);
             }
 
-            // Ложный маркер — сдвигаемся на 1 байт от кандидата
             self.drain(start + 1);
             self.resync_count += 1;
         }
     }
 
-    /// Ищет начало кадра: два подряд байта с bit0==0 (старший+младший РЕО-1).
-    /// Mid-stream это же место уникально как «второй из трёх» (хвост предыдущего кадра
-    /// + high + low РЕО-1); ложные пары отсекаются `validate_frame`.
     fn find_frame_start(&self) -> Option<usize> {
         let len = self.buf.len();
         if len < 2 {
@@ -139,9 +133,14 @@ fn bit0_clear(b: u8) -> bool {
     b & 0x01 == 0
 }
 
-/// Кадр валиден, если bit0 старшего байта РЕО-1 == 0 и у всех младших байт пар bit0 == 0.
+/// Маркер начала: старший и младший байт РЕО-1 с bit0 == 0.
+pub fn validate_marker(frame: &[u8; FRAME_SIZE]) -> bool {
+    bit0_clear(frame[0]) && bit0_clear(frame[1])
+}
+
+/// Полная валидация при захвате синхронизации.
 pub fn validate_frame(frame: &[u8; FRAME_SIZE]) -> bool {
-    if !bit0_clear(frame[0]) {
+    if !validate_marker(frame) {
         return false;
     }
     for i in (1..FRAME_SIZE).step_by(2) {
@@ -160,17 +159,14 @@ mod tests {
         let mut f = [0u8; 20];
         for i in 0..10 {
             let high = if i == 0 {
-                // маркер: bit0 = 0, данные из seed
                 (seed & 0x7E) & !1
             } else {
-                // старшие байты: bit0 = 1 (как в базовом РКМ)
                 ((seed.wrapping_add(i as u8) << 1) & 0x7E) | 0x01
             };
-            let low = ((seed.wrapping_add(i as u8 * 3) << 1) & 0x7E) & !1; // bit0 = 0
+            let low = ((seed.wrapping_add(i as u8 * 3) << 1) & 0x7E) & !1;
             f[i * 2] = high;
             f[i * 2 + 1] = low;
         }
-        // служебный канал 10 как в РКМ-С
         f[18] = 0x01;
         f[19] = 0x00;
         debug_assert!(validate_frame(&f));
@@ -193,7 +189,7 @@ mod tests {
     #[test]
     fn recovers_after_garbage_prefix() {
         let mut sync = FrameSynchronizer::new();
-        let mut stream = vec![0x01, 0x03, 0x05, 0x07]; // bit0=1 — мусор
+        let mut stream = vec![0x01, 0x03, 0x05, 0x07];
         stream.extend_from_slice(&make_frame(10));
         stream.extend_from_slice(&make_frame(11));
         let frames = sync.push_bytes(&stream);
@@ -202,14 +198,23 @@ mod tests {
     }
 
     #[test]
+    fn locked_tolerates_noisy_low_bit_on_other_channel() {
+        let mut sync = FrameSynchronizer::new();
+        let f0 = make_frame(1);
+        let mut f1 = make_frame(2);
+        // После lock портим low BASE (offset 3) — bit0=1
+        f1[3] |= 1;
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&f0);
+        stream.extend_from_slice(&f1);
+        let frames = sync.push_bytes(&stream);
+        assert_eq!(frames.len(), 2, "soft lock should keep second frame");
+    }
+
+    #[test]
     fn three_byte_marker_mid_stream() {
         let f0 = make_frame(1);
         let f1 = make_frame(2);
-        // На стыке кадров: low последнего канала f0 и high+low РЕО-1 f1 — три bit0==0
-        assert_eq!(f0[19] & 1, 0);
-        assert_eq!(f1[0] & 1, 0);
-        assert_eq!(f1[1] & 1, 0);
-
         let mut sync = FrameSynchronizer::new();
         let mut stream = Vec::new();
         stream.extend_from_slice(&f0);

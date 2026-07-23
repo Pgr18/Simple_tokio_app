@@ -38,7 +38,12 @@ impl ComPortReader {
     pub fn connect(&mut self, port_name: &str, baud_rate: u32) -> Result<(), Box<dyn std::error::Error>> {
         let mut cfg = self.config.clone();
         cfg.baud_rate = baud_rate;
-        let port = cfg.open(port_name)?;
+        let mut port = cfg.open(port_name)?;
+        // Сброс мусора после RTS/DTR.
+        let mut trash = [0u8; 512];
+        for _ in 0..5 {
+            let _ = port.read(&mut trash);
+        }
         self.port = Some(port);
         self.config = cfg;
         self.clear_buffer();
@@ -67,19 +72,10 @@ impl ComPortReader {
         self.sync.resync_count
     }
 
-    pub fn parser_status(&self) -> String {
-        format!(
-            "Buffer: {} bytes, pending frames: {}, resyncs: {}, locked path via sync",
-            self.sync.buffer_len(),
-            self.pending.len(),
-            self.sync.resync_count
-        )
-    }
-
-    /// Читает с порта и возвращает один кадр. Без подключения — `None`.
-    pub fn read_data(&mut self) -> Option<Frame> {
+    /// Читает сырой 20-байтный кадр (для фильтрации / калибровки).
+    pub fn read_raw_frame(&mut self) -> Option<[u8; 20]> {
         if let Some(frame) = self.pending.pop() {
-            return Some(decode_frame(&frame));
+            return Some(frame);
         }
         if self.port.is_none() {
             return None;
@@ -97,7 +93,7 @@ impl ComPortReader {
                 let mut iter = frames.into_iter();
                 let first = iter.next()?;
                 self.pending.extend(iter.rev());
-                Some(decode_frame(&first))
+                Some(first)
             }
             Ok(_) => None,
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => None,
@@ -108,7 +104,11 @@ impl ComPortReader {
         }
     }
 
-    /// Ищет порт с потоком РКМ / РКМ-С и подключается к нему.
+    /// Декодированный кадр (без выходных фильтров РКМ).
+    pub fn read_data(&mut self) -> Option<Frame> {
+        self.read_raw_frame().map(|raw| decode_frame(&raw))
+    }
+
     pub fn auto_connect(&mut self, baud_rate: u32) -> Result<String, String> {
         if self.is_connected() {
             self.disconnect();
@@ -135,6 +135,7 @@ impl Default for ComPortReader {
 
 /// Прогоняет сырой дамп через синхронизатор + декодер (офлайн, без async).
 pub fn decode_dump(bytes: &[u8]) -> DumpStats {
+    use super::decode::decode_frame as dec;
     let mut sync = FrameSynchronizer::new();
     let frames_raw = sync.push_bytes(bytes);
 
@@ -146,7 +147,7 @@ pub fn decode_dump(bytes: &[u8]) -> DumpStats {
     };
 
     for raw in &frames_raw {
-        let f = decode_frame(raw);
+        let f = dec(raw);
         stats.update(f);
     }
     stats

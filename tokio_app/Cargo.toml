@@ -2,6 +2,11 @@
 name = "com-port-plotter"
 version = "0.1.0"
 edition = "2021"
+authors = ["RPG"]
+description = "COM Port Data Plotter (RKM / RKMS)"
+
+[package.metadata]
+publisher = "RPG"
 
 [dependencies]
 eframe = "0.27.2"

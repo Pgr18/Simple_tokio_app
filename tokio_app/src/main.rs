@@ -1,3 +1,6 @@
+// В release не показывать чёрное окно консоли.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use com_port_plotter::ui::MainWindow;
 use eframe::egui;
 

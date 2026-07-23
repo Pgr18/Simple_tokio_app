@@ -12,6 +12,13 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "COM Port Data Plotter",
         options,
-        Box::new(|_cc| Box::new(MainWindow::new())),
+        Box::new(|cc| {
+            cc.egui_ctx.set_visuals(egui::Visuals::light());
+            // На случай, если система тянет тёмную тему.
+            let mut style = (*cc.egui_ctx.style()).clone();
+            style.visuals = egui::Visuals::light();
+            cc.egui_ctx.set_style(style);
+            Box::new(MainWindow::new())
+        }),
     )
 }

@@ -2,8 +2,9 @@ use crate::data::filter::sharping_decimate;
 use crate::data::processor::DataProcessor;
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Sense, Stroke};
-use egui_plot::{Line, Plot, PlotBounds, PlotPoint, PlotPoints, PlotTransform};
+use egui_plot::{Axis, AxisHints, GridMark, Line, Plot, PlotBounds, PlotPoint, PlotPoints, PlotTransform};
 use std::collections::HashMap;
+use std::ops::RangeInclusive;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TimeScale {
@@ -323,7 +324,10 @@ impl PlotManager {
         };
 
         let plot_points: PlotPoints = points.iter().map(|(t, v)| [*t, *v]).collect();
-        let line = Line::new(plot_points).name(name);
+        let line = Line::new(plot_points)
+            .name(name)
+            .color(Color32::BLACK)
+            .width(1.25);
         let bounds = PlotBounds::from_min_max([view_start, y.min], [view_end, y.max]);
 
         let plot_response = Plot::new(name)
@@ -336,6 +340,8 @@ impl PlotManager {
             .allow_double_click_reset(false)
             .auto_bounds([false, false].into())
             .sense(Sense::click_and_drag())
+            .custom_x_axes(vec![AxisHints::new(Axis::X).label("t, с")])
+            .x_axis_formatter(format_time_axis)
             .show(ui, |plot_ui| {
                 plot_ui.set_plot_bounds(bounds);
                 plot_ui.line(line);
@@ -543,5 +549,20 @@ fn window_slice(data: &[(f64, f64)], view_start: f64, view_end: f64) -> &[(f64, 
         &[]
     } else {
         &data[start_idx..end_idx]
+    }
+}
+
+/// Подписи оси X: секунды от начала записи (не отсчёты).
+fn format_time_axis(mark: GridMark, _digits: usize, range: &RangeInclusive<f64>) -> String {
+    let v = mark.value;
+    let span = (range.end() - range.start()).abs();
+    if span >= 100.0 {
+        format!("{v:.0} с")
+    } else if span >= 10.0 {
+        format!("{v:.1} с")
+    } else if span >= 1.0 {
+        format!("{v:.2} с")
+    } else {
+        format!("{v:.3} с")
     }
 }

@@ -560,6 +560,10 @@ impl MainWindow {
 
 impl eframe::App for MainWindow {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Светлая тема всего UI.
+        if ctx.style().visuals.dark_mode {
+            ctx.set_visuals(egui::Visuals::light());
+        }
         if self.auto_find_on_start {
             self.auto_find_on_start = false;
             self.start_auto_discover();

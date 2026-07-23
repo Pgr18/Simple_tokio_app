@@ -1,0 +1,15 @@
+package.metadata.winres does not exist
+"C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.19041.0\\x64\\rc.exe"
+"C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.22621.0\\x64\\rc.exe"
+Selected RC path: 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\rc.exe'
+RC Output:
+Microsoft (R) Windows (R) Resource Compiler Version 10.0.10011.16384
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+
+------
+RC Error:
+
+------
+cargo:rustc-link-search=native=D:\Simple_tokio_app\tokio_app\target\debug\build\com-port-plotter-b27f3a7dc780d784\out
+cargo:rustc-link-lib=dylib=resource

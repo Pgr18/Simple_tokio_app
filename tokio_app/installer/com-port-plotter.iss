@@ -30,6 +30,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=output
 OutputBaseFilename=COMPortPlotter-Setup-{#MyAppVersion}
+SetupIconFile=..\assets\rheogram.ico
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -57,9 +58,9 @@ Source: "redist\VC_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall 
 Source: "drivers\prolific\{#ProlificInstaller}"; DestDir: "{tmp}"; Flags: deleteafterinstall skipifsourcedoesntexist
 
 [Icons]
-Name: "{group}\{#MyAppShortcutName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
+Name: "{group}\{#MyAppShortcutName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppShortcutName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppShortcutName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
 Filename: "{tmp}\VC_redist.x64.exe"; \

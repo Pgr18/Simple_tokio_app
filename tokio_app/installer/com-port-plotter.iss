@@ -75,11 +75,3 @@ Filename: "{tmp}\{#ProlificInstaller}"; \
 Filename: "{app}\{#MyAppExeName}"; \
   Description: "{cm:LaunchProgram,{#MyAppDisplayName}}"; \
   Flags: nowait postinstall skipifsilent
-
-[Code]
-function InitializeWizard(): Boolean;
-begin
-  Result := True;
-  // If Prolific installer was not bundled, uncheck / hide is awkward;
-  // skipifsourcedoesntexist already no-ops the [Run] entry.
-end;

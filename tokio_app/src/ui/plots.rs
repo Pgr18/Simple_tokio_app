@@ -51,8 +51,6 @@ impl TimeScale {
     }
 }
 
-/// ~ширина графика в пикселях → целевое число точек (как Java AxisXController).
-const TARGET_PLOT_PX: f64 = 800.0;
 const MIN_VIEW_SPAN_S: f64 = 0.05;
 /// Минимальный размер выделения в пикселях (иначе считаем кликом).
 const MIN_BOX_PX: f32 = 8.0;
@@ -102,15 +100,6 @@ impl YBounds {
         if self.max - self.min < 1e-6 {
             self.max = self.min + 1.0;
         }
-    }
-
-    fn from_range(a: f64, b: f64) -> Self {
-        let (min, max) = if a <= b { (a, b) } else { (b, a) };
-        let mut span = max - min;
-        if span < 1e-9 {
-            span = 1.0;
-        }
-        Self { min, max: min + span }
     }
 }
 
@@ -222,7 +211,7 @@ impl PlotManager {
                         if ui.button("Y reset").clicked() {
                             self.reset_y_bounds();
                         }
-                        ui.label("ЛКМ: зум окном · двойной клик: Fit");
+                        ui.label("ЛКМ: зум по времени · двойной клик: Fit");
                     } else {
                         ui.label("Time scale:");
                         ui.label(format!("{}", self.time_scale.get_name()));
@@ -297,20 +286,33 @@ impl PlotManager {
             return;
         }
 
+        // Целимся в реальную ширину графика; при достаточном числе точек
+        // не прореживаем — иначе min/max-огибающая превращается в «пилы».
+        let width_px = ui.available_width().max(64.0) as f64;
         let seconds = (view_end - view_start).max(0.1);
-        let points_in_sec = TARGET_PLOT_PX / seconds;
-        let factor = ((200.0 / points_in_sec).round() as usize).max(1);
+        let points_in_sec = width_px / seconds;
+        let mut factor = ((200.0 / points_in_sec).round() as usize).max(1);
+        if window.len() as f64 <= width_px * 2.0 {
+            factor = 1;
+        }
         let points = sharping_decimate(window, factor);
 
+        // Y считаем по полному окну (не по прореженному), чтобы пики не «срезались».
         let y = if let Some(manual) = self.y_manual.get(name).copied() {
             manual
-        } else {
-            if let Some(fresh) = YBounds::from_points(&points, force_zero) {
+        } else if let Some(fresh) = YBounds::from_points(window, force_zero) {
+            if self.offline {
+                // В .bin сразу подгоняем шкалу под видимый фрагмент.
+                self.y_bounds.insert(name.to_string(), fresh);
+                fresh
+            } else {
                 self.y_bounds
                     .entry(name.to_string())
                     .and_modify(|b| b.follow(fresh))
                     .or_insert(fresh);
+                *self.y_bounds.get(name).unwrap()
             }
+        } else {
             self.y_bounds
                 .get(name)
                 .copied()
@@ -410,10 +412,8 @@ impl PlotManager {
             let end_plot = transform.value_from_position(end_screen);
             let x0 = drag.start_plot.x.min(end_plot.x);
             let x1 = drag.start_plot.x.max(end_plot.x);
-            let y0 = drag.start_plot.y.min(end_plot.y);
-            let y1 = drag.start_plot.y.max(end_plot.y);
-
-            self.apply_box_zoom(channel, x0, x1, y0, y1);
+            // Только ось X: Y рамки часто обрезает пики («урезанные пилы»).
+            self.apply_box_zoom_x(x0, x1);
         }
 
         // СКМ / ПКМ: панорамирование по X.
@@ -429,7 +429,7 @@ impl PlotManager {
         }
     }
 
-    fn apply_box_zoom(&mut self, channel: &str, x0: f64, x1: f64, y0: f64, y1: f64) {
+    fn apply_box_zoom_x(&mut self, x0: f64, x1: f64) {
         let mut x_min = x0.min(x1);
         let mut x_max = x0.max(x1);
         if x_max - x_min < MIN_VIEW_SPAN_S {
@@ -445,10 +445,9 @@ impl PlotManager {
         }
         self.view_start = x_min;
         self.current_view_end = x_max;
-        self.y_manual
-            .insert(channel.to_string(), YBounds::from_range(y0, y1));
-        // Сбросить авто-Y канала — ручной диапазон приоритетнее.
-        self.y_bounds.remove(channel);
+        // Пересчитать Y по новому окну (без обрезки рамкой).
+        self.y_manual.clear();
+        self.y_bounds.clear();
     }
 
     fn pan_offline(&mut self, dx: f64) {
@@ -528,6 +527,8 @@ impl PlotManager {
         }
         self.view_start = start;
         self.current_view_end = end;
+        self.y_manual.clear();
+        self.y_bounds.clear();
     }
 
     pub fn get_time_scale(&self) -> TimeScale {

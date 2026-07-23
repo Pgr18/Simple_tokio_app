@@ -388,8 +388,8 @@ impl MainWindow {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| stats.path.display().to_string());
         self.bin_status = format!(
-            "{name}: {} байт → {} кадров, resync={}, {:.1} с (сырой decode, без фильтров)",
-            stats.bytes, stats.frames, stats.resyncs, stats.duration_s
+            "{name}: {} байт → {} кадров → {} сэмплов, resync={}, {:.1} с (с фильтрами)",
+            stats.bytes, stats.frames, stats.samples_out, stats.resyncs, stats.duration_s
         );
         self.port_status = self.bin_status.clone();
     }

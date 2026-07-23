@@ -13,38 +13,35 @@ pub fn push_one(filter: &mut dyn DigitalFilter, values: &[i32]) -> FilterOut {
     out
 }
 
-/// Java `sharpingDecimate`: Hold(size) → Decimate(size) → экстремумы окна
-/// (min и max в порядке времени) — сохраняет пики при прореживании для графика.
+/// Java `sharpingDecimate`: Hold(size) → Decimate(size) → одна точка на окно:
+/// min или max — что дальше от предыдущего значения (сохраняет пики без «пил»).
 pub fn sharping_decimate(points: &[(f64, f64)], factor: usize) -> Vec<(f64, f64)> {
     let factor = factor.max(1);
     if factor <= 1 || points.len() <= factor {
         return points.to_vec();
     }
-    let mut out = Vec::with_capacity((points.len() / factor + 2) * 2);
+    let mut out = Vec::with_capacity(points.len() / factor + 2);
+    let mut prev = points[0].1;
     for chunk in points.chunks(factor) {
         let mut min_v = f64::INFINITY;
         let mut max_v = f64::NEG_INFINITY;
-        let mut min_t = chunk[0].0;
-        let mut max_t = chunk[0].0;
+        let mut t_end = chunk[0].0;
         for &(t, v) in chunk {
             if v < min_v {
                 min_v = v;
-                min_t = t;
             }
             if v > max_v {
                 max_v = v;
-                max_t = t;
             }
+            t_end = t;
         }
-        if (min_v - max_v).abs() < 1e-12 {
-            out.push((min_t, min_v));
-        } else if min_t <= max_t {
-            out.push((min_t, min_v));
-            out.push((max_t, max_v));
+        let next = if (prev - max_v).abs() > (prev - min_v).abs() {
+            max_v
         } else {
-            out.push((max_t, max_v));
-            out.push((min_t, min_v));
-        }
+            min_v
+        };
+        prev = next;
+        out.push((t_end, next));
     }
     out
 }

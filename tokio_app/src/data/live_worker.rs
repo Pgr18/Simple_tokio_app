@@ -203,11 +203,11 @@ fn to_point(time_seconds: f64, s: &RcmOutSample) -> LivePoint {
     // РЕО: INVERSE для Ohm и для сырого signed → как decode_frame bipolar.
     LivePoint {
         time_seconds,
-        rheo1: -(s.rheo1 as f64),
+        rheo1: -(s.rheo1 as f64) / 1000.0, // В мОм
         base1: s.base1 as f64,
-        ecg: s.ecg as f64,
-        base2: s.base2 as f64,
-        rheo2: -(s.rheo2 as f64),
+        ecg: s.ecg as f64 / 1000.0, //В В
+        base2: s.base2 as f64, 
+        rheo2: -(s.rheo2 as f64) / 1000.0, // В мОм
         qs1: s.qs1 as f64,
         qs2: s.qs2 as f64,
     }

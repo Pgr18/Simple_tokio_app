@@ -1,11 +1,11 @@
 #pragma code_page(65001)
 1 VERSIONINFO
 FILEOS 0x40004
-FILETYPE 0x1
-FILEFLAGSMASK 0x3f
-PRODUCTVERSION 0, 1, 0, 0
 FILESUBTYPE 0x0
 FILEVERSION 0, 1, 0, 0
+PRODUCTVERSION 0, 1, 0, 0
+FILEFLAGSMASK 0x3f
+FILETYPE 0x1
 FILEFLAGS 0x0
 {
 BLOCK "StringFileInfo"
@@ -13,10 +13,10 @@ BLOCK "StringFileInfo"
 BLOCK "000004b0"
 {
 VALUE "FileVersion", "0.1.0"
-VALUE "ProductVersion", "0.1.0"
 VALUE "CompanyName", "RPG"
-VALUE "ProductName", "COM Port Plotter"
 VALUE "FileDescription", "COM Port Data Plotter (RKM / RKMS)"
+VALUE "ProductName", "COM Port Plotter"
+VALUE "ProductVersion", "0.1.0"
 }
 }
 BLOCK "VarFileInfo" {
